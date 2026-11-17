@@ -9,6 +9,7 @@ static class Preview
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         var cfg = new AppConfig();
+        Theme.Apply(Environment.GetEnvironmentVariable("NETSWITCH_THEME") ?? "system");
         var snap = NetInfo.Snapshot();
         var a = snap.Values.FirstOrDefault(x => x.IsUp && x.Addresses.Count > 0) ?? snap.Values.FirstOrDefault();
         var name = a?.Name ?? "Ethernet";
@@ -47,9 +48,6 @@ static class Preview
                 };
                 var wifiFake = new WifiInfo("Softech-5G", "9c:5c:8e:04:b1:30", 78, 44, "Wi-Fi 6 (802.11ax)", "WPA3-Personal", 1_200_000, 960_000);
                 NetCheck.TestErrors = n => n == "Ethernet" ? 1284 : 0;
-                PopupForm.TestRates = what == "compact"
-                    ? new() { ["Wi-Fi"] = "↓25M  ↑1.3M", ["Ethernet"] = "↓210k  ↑96k", ["ZeroTier One [ce3bd3f908824ea0]"] = "↓3k  ↑1k" }
-                    : new() { ["Wi-Fi"] = "↓ 24.6 Mbps   ↑ 1.3 Mbps", ["Ethernet"] = "↓ 210 kbps   ↑ 96 kbps", ["ZeroTier One [ce3bd3f908824ea0]"] = "↓ 3 kbps   ↑ 1 kbps" };
                 var oh = new Form { ShowInTaskbar = false, Opacity = 0, Size = new Size(1, 1) };
                 oh.Shown += (_, _) => PopupForm.Show(PopupBuilder.Overview(fake, cfg.Profiles, _ => new List<PopupAction> { new("Set static IP…"), PopupAction.Separator },
                     x => x.IsWireless ? wifiFake : null, new() { ("Scan LAN", () => { }), ("Monitor…", () => { }) }, publicIp: true, compact: what == "compact", internetIndex: 12), 600);

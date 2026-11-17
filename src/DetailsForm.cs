@@ -24,6 +24,10 @@ public sealed class DetailsForm : Form
     bool _lookupOk = true, _loading = true;
     Rectangle _dnsCard;
     string? _dnsServer;
+    // live traffic (refreshed every second)
+    readonly System.Windows.Forms.Timer _trafficTimer = new() { Interval = 1000 };
+    (long Rx, long Tx, DateTime At)? _lastBytes;
+    string _speedNow = "measuring…", _total = "";
 
     float S => DeviceDpi / 96f;
     int Px(float v) => (int)Math.Round(v * S);
@@ -57,7 +61,26 @@ public sealed class DetailsForm : Form
         _refresh.Click += async (_, _) => await Reload();
         Controls.AddRange(new Control[] { _lookup, _lookupBtn, _copyAll, _refresh });
         AcceptButton = _lookupBtn;
+        _trafficTimer.Tick += (_, _) => UpdateTraffic();
     }
+
+    void UpdateTraffic()
+    {
+        if (!NetCheck.ByteCountersSplit().TryGetValue(_adapter, out var now)) return;
+        var t = DateTime.UtcNow;
+        if (_lastBytes is { } b && (t - b.At).TotalSeconds > 0.2)
+        {
+            double secs = (t - b.At).TotalSeconds;
+            _speedNow = $"↓ {NetDetails.FormatRate(Math.Max(0, now.Rx - b.Rx) / secs)}   ↑ {NetDetails.FormatRate(Math.Max(0, now.Tx - b.Tx) / secs)}";
+        }
+        _total = $"{Bytes(now.Rx)} received · {Bytes(now.Tx)} sent";
+        _lastBytes = (now.Rx, now.Tx, t);
+        Invalidate();
+    }
+
+    static string Bytes(long b) => b >= 1L << 30 ? $"{b / (double)(1L << 30):0.0} GB" : b >= 1L << 20 ? $"{b / (double)(1L << 20):0.0} MB" : $"{b / 1024.0:0} KB";
+
+    protected override void OnFormClosed(FormClosedEventArgs e) { _trafficTimer.Dispose(); base.OnFormClosed(e); }
 
     protected override void OnHandleCreated(EventArgs e)
     {
@@ -105,6 +128,8 @@ public sealed class DetailsForm : Form
         catch (Exception ex) { _sections = new() { new Section("Error", new() { new Row("Problem", ex.Message) }) }; }
         _loading = false;
         _copyAll.Text = "Copy all";
+        UpdateTraffic();
+        _trafficTimer.Start();
         FitToContent();
         Invalidate();
     }
@@ -138,6 +163,7 @@ public sealed class DetailsForm : Form
             if (a.IsWireless && a.IsUp) link.Add(new Row("Wi-Fi", "No Wi-Fi details from Windows"));
             if (NetInfo.FormatSpeed(a.SpeedBps) is { Length: > 0 } sp) link.Add(new Row("Link speed", sp));
         }
+        if (a.IsUp) { link.Add(new Row("Speed now", "measuring…")); link.Add(new Row("Total", "")); }
         link.Add(new Row("Adapter", a.Description));
         link.Add(new Row("MAC", a.Mac.Replace('-', ':').ToLowerInvariant()));
         list.Add(new Section(w != null ? "Wi-Fi" : "Link", link));
@@ -292,8 +318,9 @@ public sealed class DetailsForm : Form
             TextRenderer.DrawText(g, _sections[i].Title, _fCard, new Rectangle(r.X + Px(16), r.Y + Px(12), r.Width - Px(32), Px(24)), _t.Text, flags);
             int y = r.Y + Px(44);
             int lw = Px(132);
-            foreach (var row in _sections[i].Rows)
+            foreach (var row0 in _sections[i].Rows)
             {
+                var row = row0.Label switch { "Speed now" => row0 with { Value = _speedNow }, "Total" => row0 with { Value = _total }, _ => row0 };
                 TextRenderer.DrawText(g, row.Label, _fBody, new Rectangle(r.X + Px(16), y, lw, RowH), _t.SubText, flags);
                 var vr = new Rectangle(r.X + Px(16) + lw, y, r.Width - Px(32) - lw, RowH);
                 int vw = Math.Min(vr.Width, TextRenderer.MeasureText(g, row.Value, _fBody, Size.Empty, flags).Width);

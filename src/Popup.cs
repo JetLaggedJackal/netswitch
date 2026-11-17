@@ -85,10 +85,6 @@ public sealed class PopupForm : Form
     readonly System.Windows.Forms.Timer _actTimer = new() { Interval = 250 };
     Dictionary<string, long> _lastBytes = new();
     readonly HashSet<int> _blinkOn = new();
-    // live speeds
-    Dictionary<string, (long Rx, long Tx)> _rateBase = new();
-    DateTime _rateAt;
-    readonly Dictionary<string, string> _rates = new(StringComparer.OrdinalIgnoreCase);
     // folded adapters, IP click targets, pin
     bool _showFolded;
     Rectangle _moreRect;
@@ -99,7 +95,6 @@ public sealed class PopupForm : Form
     bool _hoverPin;
     /// <summary>Pinned panels ignore clicks outside them. Remembered for the session.</summary>
     public static bool Pinned;
-    internal static Dictionary<string, string>? TestRates; // preview only
     bool _netBusy, _actBusy;
     ContextMenuStrip? _toolsMenu;
     public static Action<string, string>? ToolRequested; // (tool, ip)
@@ -276,22 +271,7 @@ public sealed class PopupForm : Form
             if (IsDisposed) return;
             var now = split.ToDictionary(kv => kv.Key, kv => kv.Value.Rx + kv.Value.Tx, StringComparer.OrdinalIgnoreCase);
             bool changed = false;
-            var t = DateTime.UtcNow;
-            double secs = (t - _rateAt).TotalSeconds;
-            if (_rateBase.Count == 0) { _rateBase = split; _rateAt = t; }
-            else if (secs >= 1)
-            {
-                foreach (var (n, (rx, tx)) in split)
-                {
-                    if (!_rateBase.TryGetValue(n, out var b0)) continue;
-                    double down = Math.Max(0, rx - b0.Rx) / secs, upr = Math.Max(0, tx - b0.Tx) / secs;
-                    var text = _c.Compact
-                        ? $"↓{NetDetails.FormatRateShort(down)}  ↑{NetDetails.FormatRateShort(upr)}"
-                        : $"↓ {NetDetails.FormatRate(down)}   ↑ {NetDetails.FormatRate(upr)}";
-                    if (!_rates.TryGetValue(n, out var old) || old != text) { _rates[n] = text; changed = true; }
-                }
-                _rateBase = split; _rateAt = t;
-            }
+
             for (int i = 0; i < _c.Entries.Count; i++)
             {
                 var name = _c.Entries[i].Name;
@@ -628,8 +608,13 @@ public sealed class PopupForm : Form
             var entry = _c.Entries[i];
             var (name, line, copy, up, gw, rest) = entry;
             bool clickable = copy != null || entry.Click != null || entry.Actions != null;
-            if (i == _hoverEntry && clickable && _hoverIp != i && _hoverGw != i)
-                using (var hb = new SolidBrush(_t.SurfaceHover)) using (var hp = Theme.RoundRect(r, 5)) g.FillPath(hb, hp);
+            bool hovered = i == _hoverEntry && clickable && _hoverIp != i && _hoverGw != i;
+            if (hovered || entry.Tag == "Internet")
+            {
+                // The internet adapter keeps a soft highlight; hover makes any row a bit stronger.
+                var fillCol = hovered ? _t.SurfaceHover : Theme.Blend(_t.Accent, _t.Surface, _t.Dark ? 0.10f : 0.06f);
+                using var hb = new SolidBrush(fillCol); using var hp = Theme.RoundRect(r, 5); g.FillPath(hb, hp);
+            }
             int edot = Px(8);
             var dotRect = new Rectangle(r.X + Px(8), r.Y + Px(_c.Compact ? 4 : 5) + (lh - edot) / 2, edot, edot);
             if (up && _blinkOn.Contains(i))
@@ -648,7 +633,6 @@ public sealed class PopupForm : Form
             if (i == _copiedEntry) { rightText = "Copied"; rightColor = _t.Success; }
             else if (entry.Badge != null) { rightText = entry.Badge; rightColor = _t.Accent; }
             else if (i == _hoverEntry && entry.Click != null) rightText = entry.Hint ?? "Switch";
-            else if (up && (_rates.TryGetValue(name, out var rate) || (TestRates?.TryGetValue(name, out rate) ?? false))) rightText = rate;
             int rw = rightText == null ? 0 : TextRenderer.MeasureText(g, rightText, _fSub, Size.Empty, np).Width;
             if (rightText != null)
                 TextRenderer.DrawText(g, rightText, _fSub, new Rectangle(right - rw, ty, rw, lh), rightColor, np | TextFormatFlags.VerticalCenter);

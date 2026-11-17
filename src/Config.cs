@@ -75,6 +75,8 @@ public sealed class AppConfig
     public bool PublicIp { get; set; } = true;
     /// <summary>One line per adapter in the overview.</summary>
     public bool CompactOverview { get; set; }
+    /// <summary>"system", "dark" or "light".</summary>
+    public string ThemeMode { get; set; } = "system";
     /// <summary>LAN scanner app opened by "Scan LAN". Empty = first one found.</summary>
     public string LanScanner { get; set; } = "";
     /// <summary>Last seen MAC of each gateway ("adapter|gateway ip" -> mac), for the gateway-changed alert.</summary>

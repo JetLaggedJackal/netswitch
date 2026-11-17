@@ -25,6 +25,7 @@ public sealed class TrayApp : ApplicationContext
         _invoker.CreateControl();
         bool firstRun = previewConfig == null && !AppConfig.Exists();
         _cfg = previewConfig ?? AppConfig.Load();
+        Theme.Apply(_cfg.ThemeMode);
         if (firstRun) SeedDefaults();
 
         _menu = new ContextMenuStrip { ShowCheckMargin = true, ShowImageMargin = false, Font = Theme.UiFont(9.75f), Padding = new Padding(0, 4, 0, 4) };
@@ -237,7 +238,7 @@ public sealed class TrayApp : ApplicationContext
         _editor = new ProfilesForm(AppConfig.Load(), _icon.Icon ?? SystemIcons.Application, Startup.IsEnabled());
         _editor.StartupToggle = ToggleStartupAsync;
         _editor.ExitApp = ExitThread;
-        _editor.Saved += cfg => { _cfg = cfg; _hotkeys.Enable(cfg.Hotkeys); _ = RefreshTrayStatusAsync(); UpdateTooltip(); };
+        _editor.Saved += cfg => { _cfg = cfg; Theme.Apply(cfg.ThemeMode); _hotkeys.Enable(cfg.Hotkeys); _ = RefreshTrayStatusAsync(); UpdateTooltip(); };
         _editor.Uninstall = UninstallAsync;
         _editor.TestPopup = c => Popup(c);
         _editor.Show();

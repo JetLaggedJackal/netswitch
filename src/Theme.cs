@@ -22,6 +22,11 @@ public sealed class Theme
     public Color Success { get; private init; }
     public Color Danger { get; private init; }
 
+    /// <summary>Null = follow Windows; true/false = always dark/light (Settings > Pop-ups > Colours).</summary>
+    public static bool? ForceDark;
+
+    public static void Apply(string mode) => ForceDark = mode switch { "dark" => true, "light" => false, _ => null };
+
     public static Font UiFont(float size = 9.75f, FontStyle style = FontStyle.Regular)
     {
         foreach (var name in new[] { "Segoe UI Variable Text", "Segoe UI" })
@@ -44,6 +49,7 @@ public sealed class Theme
                 dark = k?.GetValue("AppsUseLightTheme") is int v && v == 0;
             }
             catch { }
+            if (ForceDark is { } forced) dark = forced;
             try
             {
                 using var k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\DWM");
@@ -52,6 +58,9 @@ public sealed class Theme
             }
             catch { }
 
+            // A grey or near-black Windows accent would leave NetSwitch colourless: use its own blue then.
+            if (accent.GetSaturation() < 0.3f || accent.GetBrightness() < 0.15f || accent.GetBrightness() > 0.9f)
+                accent = dark ? Color.FromArgb(0x4C, 0xC2, 0xFF) : Color.FromArgb(0x00, 0x67, 0xC0);
             // Keep accent readable on the chosen background.
             if (dark) accent = Lighten(accent, 0.35f);
             else if (accent.GetBrightness() > 0.6f) accent = Darken(accent, 0.3f);
