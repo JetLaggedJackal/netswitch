@@ -155,17 +155,18 @@ public sealed class TrayApp : ApplicationContext
         }
 
         // Profiles, one click to apply.
-        bool multiAdapter = _cfg.Profiles.Select(p => p.Adapter).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1;
         foreach (var p in _cfg.Profiles)
         {
             snap.TryGetValue(p.Adapter, out var a);
             var detail = p.Dhcp ? "DHCP" : IpUtil.SplitIp(p.Ip).ip;
             var profile = p;
-            var item = Item(p.Name, async (_, _) => await ApplyAsync(profile));
+            var item = new ProfileMenuItem(p.Name, async (_, _) => await ApplyAsync(profile)) { Padding = new Padding(4, 5, 4, 5) };
             item.Checked = NetInfo.Matches(p, a);
             item.Enabled = !_busy;
-            item.ShortcutKeyDisplayString = multiAdapter ? $"{p.Adapter} · {detail}" : detail;
-            item.ShowShortcutKeys = true;
+            bool active = item.Checked;
+            // Don't repeat the address when the profile is already named after it.
+            if (string.Equals(detail, p.Name.Trim(), StringComparison.OrdinalIgnoreCase)) detail = "Fixed IP";
+            item.Detail = (active ? "Active · " : "") + $"{detail} · {p.Adapter}";
             item.Font = new Font(_menu.Font, FontStyle.Bold);
             _menu.Items.Add(item);
         }

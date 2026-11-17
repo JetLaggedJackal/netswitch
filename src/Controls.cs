@@ -251,23 +251,33 @@ public class ToggleSwitch : Control
     protected override void OnClick(EventArgs e) { base.OnClick(e); Focus(); Checked = !Checked; }
     protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Space) Checked = !Checked; }
     protected override void OnTextChanged(EventArgs e) { base.OnTextChanged(e); Invalidate(); }
+
+    // Never narrower than the switch plus its label, whatever the DPI.
+    int MinWidth => string.IsNullOrEmpty(Text) ? 0
+        : LogicalToDeviceUnits(56) + TextRenderer.MeasureText(Text, Font).Width + LogicalToDeviceUnits(8);
+    protected override void SetBoundsCore(int x, int y, int width, int height, BoundsSpecified specified)
+        => base.SetBoundsCore(x, y, Math.Max(width, MinWidth), height, specified);
+    protected override void OnDpiChangedAfterParent(EventArgs e) { base.OnDpiChangedAfterParent(e); Width = Width; }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
         g.Clear(Parent?.BackColor ?? _t.Window);
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        float h = 20, w = 40, y = (Height - h) / 2;
+        float s = DeviceDpi / 96f;
+        float h = 20 * s, w = 40 * s, y = (Height - h) / 2;
         var track = new RectangleF(1, y, w, h);
         using (var path = Theme.RoundRect(track, h / 2))
         {
             if (_on) { using var b = new SolidBrush(_t.Accent); g.FillPath(b, path); }
-            else { using var p = new Pen(_t.SubText, 1.2f); g.DrawPath(p, path); }
+            else { using var p = new Pen(_t.SubText, 1.2f * s); g.DrawPath(p, path); }
         }
-        float d = _on ? 12 : 10;
-        float x = _on ? track.Right - d - 5 : track.X + 5;
+        float d = (_on ? 12 : 10) * s;
+        float x = _on ? track.Right - d - 5 * s : track.X + 5 * s;
         using (var knob = new SolidBrush(_on ? _t.AccentText : _t.SubText))
             g.FillEllipse(knob, x, y + (h - d) / 2, d, d);
-        var textRect = new Rectangle((int)w + 12, 0, Width - (int)w - 12, Height);
+        int tx = (int)(w + 12 * s);
+        var textRect = new Rectangle(tx, 0, Width - tx, Height);
         TextRenderer.DrawText(g, Text, Font, textRect, _t.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
     }
 }

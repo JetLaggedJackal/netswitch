@@ -256,6 +256,8 @@ public sealed class ProfilesForm : Form
         base.OnHandleCreated(e);
         _t.ApplyWindowChrome(this);
         _t.ApplyControlTheme(_list);
+        // Scrollable pages get dark scroll bars in dark mode.
+        foreach (var page in new[] { _profilePage, _notifyPage, _emptyPage }) _t.ApplyControlTheme(page);
     }
 
     protected override void OnLoad(EventArgs e)
@@ -692,7 +694,6 @@ public sealed class AdapterRow : Control
 {
     readonly Theme _t;
     readonly ToggleSwitch _menu, _watch;
-    readonly Panel _menuCol, _watchCol;
     readonly string _detail;
     public string AdapterName { get; }
     public bool ShowInMenu => _menu.Checked;
@@ -703,18 +704,24 @@ public sealed class AdapterRow : Control
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BackColor = t.Panel;
         Height = 42;
-        (_watchCol, _watch) = Column(watched);
-        (_menuCol, _menu) = Column(showInMenu);
-        Controls.Add(_menuCol);
-        Controls.Add(_watchCol);
+        _menu = new ToggleSwitch(_t, "") { Checked = showInMenu, BackColor = _t.Panel };
+        _watch = new ToggleSwitch(_t, "") { Checked = watched, BackColor = _t.Panel };
+        Controls.Add(_menu);
+        Controls.Add(_watch);
     }
-    (Panel, ToggleSwitch) Column(bool on)
+    int ColWidth => LogicalToDeviceUnits(AdapterColumns.Width);
+
+    // Place the switches from the current size and DPI on every layout pass, so DPI scaling
+    // can't push them out of their columns.
+    protected override void OnLayout(LayoutEventArgs e)
     {
-        var col = new Panel { Dock = DockStyle.Right, Width = AdapterColumns.Width, BackColor = _t.Panel };
-        var sw = new ToggleSwitch(_t, "") { Checked = on, Size = new Size(44, 26), BackColor = _t.Panel };
-        col.Controls.Add(sw);
-        col.Resize += (_, _) => sw.Location = new Point((col.Width - sw.Width) / 2, (col.Height - sw.Height) / 2);
-        return (col, sw);
+        base.OnLayout(e);
+        if (_menu == null || _watch == null) return; // layout runs during construction
+        int col = ColWidth;
+        var size = new Size(LogicalToDeviceUnits(44), LogicalToDeviceUnits(26));
+        int y = (Height - size.Height) / 2;
+        _menu.Bounds = new Rectangle(Width - col * 2 + (col - size.Width) / 2, y, size.Width, size.Height);
+        _watch.Bounds = new Rectangle(Width - col + (col - size.Width) / 2, y, size.Width, size.Height);
     }
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -724,7 +731,7 @@ public sealed class AdapterRow : Control
         using var small = Theme.UiFont(8.25f);
         int lh = TextRenderer.MeasureText("Ag", bold).Height;
         int top = (Height - lh * 2) / 2;
-        int w = Width - _menuCol.Width - _watchCol.Width - 8;
+        int w = Width - ColWidth * 2 - LogicalToDeviceUnits(8);
         TextRenderer.DrawText(g, AdapterName, bold, new Rectangle(0, top, w, lh), _t.Text, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         TextRenderer.DrawText(g, _detail, small, new Rectangle(0, top + lh, w, lh), _t.SubText, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         using var p = new Pen(_t.Border);
