@@ -16,14 +16,51 @@ static class Program
         if (args.Length > 0 && args[0].StartsWith("--"))
             return RunHelper(args);
 
-        using var mutex = new Mutex(true, @"Local\NetSwitch.Tray", out bool first);
-        if (!first) return 0; // already running
-
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
+
+        bool running = Mutex.TryOpenExisting(@"Local\NetSwitch.Tray", out var existing);
+        existing?.Dispose();
+        try { if (!afterUpdate && Installer.HandleFirstRun(running)) return 0; }
+        catch { /* never let the install offer stop the app from starting */ }
+
+        using var mutex = new Mutex(true, @"Local\NetSwitch.Tray", out bool first);
+        if (!first) return 0; // already running
+
+        // An unexpected error should show a pop-up and keep the tray icon alive, not kill the app.
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => ReportCrash(e.Exception, fatal: false);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => { if (e.ExceptionObject is Exception ex) ReportCrash(ex, fatal: true); };
+        TaskScheduler.UnobservedTaskException += (_, e) => { Log(e.Exception); e.SetObserved(); };
+
         Application.Run(new TrayApp());
         return 0;
+    }
+
+    public static string LogPath => Path.Combine(Path.GetDirectoryName(AppConfig.DefaultPath)!, "error.log");
+
+    static void Log(Exception ex)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
+            if (File.Exists(LogPath) && new FileInfo(LogPath).Length > 512_000) File.Delete(LogPath);
+            File.AppendAllText(LogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] NetSwitch {Updater.CurrentText}\n{ex}\n\n");
+        }
+        catch { }
+    }
+
+    static void ReportCrash(Exception ex, bool fatal)
+    {
+        Log(ex);
+        if (fatal) return;
+        try
+        {
+            PopupForm.Show(PopupBuilder.Error("Something went wrong",
+                $"{ex.Message}\n\nNetSwitch is still running. Details were saved to {LogPath}."), 20);
+        }
+        catch { }
     }
 
     static int RunHelper(string[] args)

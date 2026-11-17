@@ -119,7 +119,8 @@ public static class PopupBuilder
     }
 
     /// <summary>Left-click picker: one entry per profile, click to switch. Same look and place as the overview.</summary>
-    public static PopupContent Profiles(IReadOnlyList<Profile> profiles, IReadOnlyDictionary<string, AdapterInfo> snap, bool busy, Action<Profile> apply)
+    public static PopupContent Profiles(IReadOnlyList<Profile> profiles, IReadOnlyDictionary<string, AdapterInfo> snap, bool busy, Action<Profile> apply,
+        (string Adapter, PreviousSettings Prev) previous = default, Action<string>? restore = null)
     {
         var entries = new List<PopupEntry>();
         foreach (var p in profiles)
@@ -138,6 +139,21 @@ public static class PopupBuilder
                 Hint = "Switch",
                 Badge = active ? "Active" : null,
             });
+        }
+        if (previous.Prev?.Settings is { } ps && restore != null)
+        {
+            snap.TryGetValue(previous.Adapter, out var cur);
+            // Only offer it while it would actually change something.
+            if (!NetInfo.Matches(ps, cur))
+            {
+                var adapter = previous.Adapter;
+                entries.Add(new PopupEntry("Previous settings", NetInfo.Describe(ps), null, false, null,
+                    $"{adapter}  ·  before {previous.Prev.At:HH:mm}")
+                {
+                    Click = busy ? null : () => restore(adapter),
+                    Hint = "Restore",
+                });
+            }
         }
         return new PopupContent
         {

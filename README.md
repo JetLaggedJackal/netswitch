@@ -6,25 +6,36 @@ A small Windows tray app that switches a network adapter between saved profiles 
 
 ![Right-click overview](docs/screenshots/right-click-overview.png) ![Left-click menu](docs/screenshots/left-click-menu.png)
 
-## Which exe to use
+## Install
 
-| File | Size | Needs |
-|---|---|---|
-| `NetSwitch.exe` (framework-dependent build) | ~250 KB | [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) (x64). Windows asks to install it on first run if it is missing. |
-| `NetSwitch.exe` (self-contained build) | ~70 MB | Nothing. Runs on any 64-bit Windows 10/11. |
+**Option 1, one line in PowerShell** (no admin needed):
 
-Put the exe anywhere you like (for example `C:\Tools\NetSwitch\`) and run it.
+```powershell
+irm https://raw.githubusercontent.com/JetLaggedJackal/netswitch/main/install.ps1 | iex
+```
+
+It downloads the latest release to `%LOCALAPPDATA%\Programs\NetSwitch`, adds a Start menu shortcut and starts it.
+
+**Option 2, download the exe** from [the latest release](https://github.com/JetLaggedJackal/netswitch/releases/latest) and open it. NetSwitch offers to install itself to the same place (Install), or to run from where it is (Run from here; it won't ask again for that folder). Opening a newer exe later offers to update the installed copy.
+
+The exe is self-contained (~70 MB, nothing else needed) and not code-signed, so Windows SmartScreen may warn the first time: click *More info* > *Run anyway*.
+
+After that, updates come from **Settings > Updates**. Profiles and settings live in `%APPDATA%\NetSwitch` and survive updates and reinstalls.
 
 ## Using it
 
-- **Left-click the tray icon:** your profiles. Click one to switch; the active one has a dot.
-- **Right-click the tray icon:** every adapter with its IP, DHCP/static, gateway and matching profile. Click an adapter to copy its IP. Settings and Exit are here too.
+- **Left-click the tray icon:** your profiles. Click one to switch; the active one says "Active". After a switch, "Previous settings" lets you go back.
+- **Right-click the tray icon:** internet status (pings 1.1.1.1 / 8.8.8.8, DNS lookup), and every adapter with its IP, DHCP/static, link speed, gateway and matching profile; dots blink with traffic.
+  - Click an adapter: **Set static IP…**, **Switch to DHCP**, **Return to previous settings**, **Copy IP**.
+  - Click its gateway: ping -t, ping, tracert, pathping, open the router page, copy.
+- After every switch the pop-up has **Undo**. With **Safe switching** on (Settings), NetSwitch asks you to keep the new settings and goes back by itself after 30 seconds if you don't, which saves you when a change cuts you off.
 - **Settings…** opens the window where you:
   - add, duplicate and delete profiles: name, adapter, IP Automatic/Manual, DNS Automatic/Manual (DHCP with your own DNS works). Type `192.168.1.50/24` in the IP box or `24` in the mask box and the mask fills in as 255.255.255.0;
-  - turn on **Start with Windows** (starts at sign-in with admin rights, so switching never shows a UAC prompt);
-  - choose pop-up behaviour, and per adapter whether it shows in the right-click list and whether it pops up when its IP changes.
+  - turn on **Start with Windows** (starts at sign-in with admin rights, so switching never shows a UAC prompt), or quit NetSwitch;
+  - turn on safe switching, choose pop-up behaviour, and per adapter whether it shows in the overview and whether it pops up when its IP changes;
   - check for updates (or let it check once a day): it downloads the newest release from GitHub and restarts itself.
 - When a watched adapter's IP changes, a pop-up shows the old and new IP, mask, gateway, DNS, DHCP server and lease, Wi-Fi name, matching profile, link speed and MAC.
+- If something unexpected goes wrong, NetSwitch shows a pop-up and keeps running; details go to `%APPDATA%\NetSwitch\error.log`.
 
 ## Where settings live
 
@@ -45,7 +56,7 @@ Put the exe anywhere you like (for example `C:\Tools\NetSwitch\`) and run it.
 
 - Switching runs `netsh interface ipv4 set address / set dnsservers` for the adapter. When NetSwitch is not elevated it re-launches itself through UAC with `--apply "<profile>"`, does only that, and exits.
 - IP watching uses Windows network change events (no polling), waits 2 seconds for things to settle, then compares the watched adapters' IPv4 addresses with the previous state.
-- Pop-ups are standard Windows notifications, so Focus Assist / Do Not Disturb can hide them.
+- Before each switch NetSwitch saves the adapter's current settings (`Previous` in config.json), which is what Undo and "Return to previous settings" put back.
 
 ## Building
 

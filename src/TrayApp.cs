@@ -141,7 +141,9 @@ public sealed class TrayApp : ApplicationContext
     }
 
     void ShowProfileMenu() => TogglePanel("profiles", () =>
-        PopupBuilder.Profiles(_cfg.Profiles, NetInfo.Snapshot(), _busy, p => _ = ApplyAsync(p)));
+        PopupBuilder.Profiles(_cfg.Profiles, NetInfo.Snapshot(), _busy, p => _ = ApplyAsync(p),
+            _cfg.Previous.Where(kv => kv.Value.Settings != null).OrderByDescending(kv => kv.Value.At).Select(kv => (kv.Key, kv.Value)).FirstOrDefault(),
+            adapter => _ = RestorePreviousAsync(adapter)));
 
     void ToggleOverview() => TogglePanel("overview", () =>
     {
@@ -233,6 +235,8 @@ public sealed class TrayApp : ApplicationContext
             new("Set static IP…", "", () => QuickStatic(a)),
             new("Switch to DHCP", a.Dhcp ? "already on" : "", () => _ = ApplyQuickAsync(new Profile { Name = $"DHCP on {a.Name}", Adapter = a.Name, Dhcp = true, DnsAuto = true })),
         };
+        if (PreviousFor(a.Name) is { } prev)
+            list.Add(new("Return to previous settings", NetInfo.Describe(prev.Settings), () => _ = RestorePreviousAsync(a.Name)));
         list.Add(PopupAction.Separator);
         list.Add(new("Copy IP", ip ?? "", ip == null ? null : () => RunTool("copy", ip)));
         return list;
@@ -245,14 +249,72 @@ public sealed class TrayApp : ApplicationContext
         if (f.ShowDialog() == DialogResult.OK && f.Result is { } p) _ = ApplyQuickAsync(p);
     }
 
+    // ---------------- safe return to the previous settings ----------------
+
+    static Profile Named(Profile p, string name) { var c = p.Clone(); c.Name = name; return c; }
+
+    /// <summary>Stores the adapter's settings from before a switch. Returns them, or null if there was nothing to keep.</summary>
+    Profile? RememberPrevious(AdapterInfo before)
+    {
+        var prev = NetInfo.CurrentAsProfile(before, "Previous settings");
+        if (prev == null) return null;
+        try
+        {
+            var cfg = AppConfig.Load(_cfg.Path); // fresh copy, so we don't overwrite edits made elsewhere
+            cfg.Previous[before.Name] = new PreviousSettings { Settings = prev, At = DateTime.Now };
+            cfg.Save();
+            _cfg = _fixedConfig ?? cfg;
+        }
+        catch { }
+        return prev;
+    }
+
+    PreviousSettings? PreviousFor(string adapter) =>
+        _cfg.Previous.TryGetValue(adapter, out var p) && p.Settings != null ? p : null;
+
+    Task RestorePreviousAsync(string adapter) =>
+        PreviousFor(adapter) is { } prev ? ApplyQuickAsync(Named(prev.Settings, "Previous settings"), isRevert: true) : Task.CompletedTask;
+
+    System.Windows.Forms.Timer? _safeTimer;
+    PopupForm? _safePopup;
+
+    /// <summary>Asks to keep the new settings; goes back by itself if nobody answers in time (e.g. the connection was lost).</summary>
+    void StartSafeSwitch(Profile applied, Profile previous)
+    {
+        _safeTimer?.Dispose();
+        _safePopup?.Dismiss();
+        int left = Math.Max(10, _cfg.SafeSwitchSeconds);
+        bool kept = false;
+        _safePopup = PopupForm.Show(new PopupContent
+        {
+            Kind = PopupKind.Success,
+            Title = $"Keep \"{applied.Name}\"?",
+            Heading = applied.Adapter,
+            Big = applied.Dhcp ? "Automatic (DHCP)" : IpUtil.SplitIp(applied.Ip).ip,
+            Message = $"Safe switching is on. NetSwitch goes back to {NetInfo.Describe(previous)} in {left} seconds unless you click Keep.",
+            ActionText = "Keep",
+            Action = () => { kept = true; _safeTimer?.Stop(); },
+            Sticky = true,
+        }, left);
+        _safeTimer = new System.Windows.Forms.Timer { Interval = left * 1000 };
+        _safeTimer.Tick += async (_, _) =>
+        {
+            _safeTimer.Stop();
+            if (kept) return;
+            _safePopup?.Dismiss();
+            await ApplyQuickAsync(Named(previous, "Previous settings"), isRevert: true);
+        };
+        _safeTimer.Start();
+    }
+
     /// <summary>Applies a one-off profile without saving it: the elevated helper reads it from a side file.</summary>
-    Task ApplyQuickAsync(Profile p)
+    Task ApplyQuickAsync(Profile p, bool isRevert = false)
     {
         var quick = new AppConfig { Profiles = { p } };
         var path = Path.Combine(Path.GetDirectoryName(_cfg.Path)!, "quick.json");
         try { quick.SaveAs(path); }
         catch (Exception ex) { Popup(PopupBuilder.Error("Could not switch", ex.Message)); return Task.CompletedTask; }
-        return ApplyAsync(p, path);
+        return ApplyAsync(p, path, isRevert);
     }
 
     // ---------------- network tools ----------------
@@ -288,7 +350,7 @@ public sealed class TrayApp : ApplicationContext
 
     // ---------------- switching ----------------
 
-    async Task ApplyAsync(Profile p, string? configPath = null)
+    async Task ApplyAsync(Profile p, string? configPath = null, bool isRevert = false)
     {
         configPath ??= _cfg.Path;
         if (_busy) return;
@@ -316,7 +378,18 @@ public sealed class TrayApp : ApplicationContext
             {
                 // Don't repeat the same news in an "IP changed" pop-up a moment later for a static switch.
                 _last = NetInfo.Snapshot();
-                Popup(PopupBuilder.Applied(p, before, _cfg.PopupStaysOpen));
+                var previous = before == null ? null : RememberPrevious(before);
+                if (isRevert)
+                    Popup(PopupBuilder.Info("Back to previous settings", $"{p.Adapter} is on {NetInfo.Describe(p)} again."));
+                else if (previous != null && _cfg.SafeSwitch)
+                    StartSafeSwitch(p, previous);
+                else
+                {
+                    var c = PopupBuilder.Applied(p, before, _cfg.PopupStaysOpen);
+                    if (previous != null)
+                        c = c with { ActionText = "Undo", Action = () => _ = ApplyQuickAsync(Named(previous, "Previous settings"), isRevert: true) };
+                    Popup(c);
+                }
             }
             else Popup(PopupBuilder.Error("Could not switch profile", msg));
         }

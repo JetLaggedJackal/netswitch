@@ -36,6 +36,7 @@ public sealed class ProfilesForm : Form
     readonly Label _updateStatus;
     Updater.Release? _available;
     bool _startupBusy;
+    ToggleSwitch _safe = null!;
     readonly List<AdapterRow> _watchRows = new();
     // footer
     readonly Label _footerMsg;
@@ -184,7 +185,7 @@ public sealed class ProfilesForm : Form
 
         // ---------- settings page ----------
         var nTitle = Ui.Label(_t, "Settings", 14f, FontStyle.Bold);
-        var nSub = Ui.Label(_t, "Startup, pop-ups, adapters and updates.", 8.75f, sub: true);
+        var nSub = Ui.Label(_t, "Startup, switching, pop-ups, adapters and updates.", 8.75f, sub: true);
         nSub.Margin = new Padding(0, 2, 0, 12);
 
         _startup = new ToggleSwitch(_t, "Start with Windows") { Width = 420, Checked = startupEnabled, Margin = new Padding(0, 0, 0, 2) };
@@ -201,6 +202,12 @@ public sealed class ProfilesForm : Form
         var test = new ModernButton(_t, "Show a test pop-up") { Width = 150, Margin = new Padding(0, 6, 0, 0) };
         test.Click += (_, _) => ShowTestPopup();
         var behaviour = CardWith("Pop-ups", _notifyOn, _sticky, test);
+
+        _safe = new ToggleSwitch(_t, "Safe switching") { Width = 420, Checked = cfg.SafeSwitch, Margin = new Padding(0, 0, 0, 2) };
+        var safeHint = Ui.Label(_t, $"After each switch, NetSwitch asks you to keep the new settings and goes back to the previous ones by itself after {cfg.SafeSwitchSeconds} seconds, e.g. when the change cut you off. Undo and \"Return to previous settings\" are always available.", 8.5f, sub: true);
+        safeHint.MaximumSize = new Size(560, 0);
+        safeHint.Margin = new Padding(52, 0, 0, 4);
+        var switching = CardWith("Switching", _safe, safeHint);
 
         var rows = new List<Control> { new AdapterHeader(_t) { Dock = DockStyle.Top } };
         var known = NetInfo.Ordered(_snap.Values).Select(a => a.Name)
@@ -229,7 +236,7 @@ public sealed class ProfilesForm : Form
         _autoUpdate = new ToggleSwitch(_t, "Check for updates once a day") { Width = 420, Checked = cfg.AutoCheckUpdates, Margin = new Padding(0, 0, 0, 2) };
         var updatesCard = CardWith("Updates", version, updateRow, _autoUpdate);
 
-        BuildPage(_notifyPage, nTitle, nSub, startupCard, behaviour, watch, updatesCard);
+        BuildPage(_notifyPage, nTitle, nSub, startupCard, switching, behaviour, watch, updatesCard);
 
         // ---------- empty state ----------
         var emptyTitle = Ui.Label(_t, "No profiles yet", 14f, FontStyle.Bold);
@@ -595,6 +602,9 @@ public sealed class ProfilesForm : Form
         _cfg.NotifyOnIpChange = _notifyOn.Checked;
         _cfg.PopupStaysOpen = _sticky.Checked;
         _cfg.AutoCheckUpdates = _autoUpdate.Checked;
+        _cfg.SafeSwitch = _safe.Checked;
+        // Keep what the tray app recorded while this window was open.
+        try { var disk = AppConfig.Load(_cfg.Path); _cfg.Previous = disk.Previous; _cfg.LastUpdateCheck = disk.LastUpdateCheck; _cfg.SkippedVersion = disk.SkippedVersion; } catch { }
         try { _cfg.Save(); }
         catch (Exception ex) { Fail("Could not save: " + ex.Message, null); return; }
         Saved?.Invoke(_cfg);

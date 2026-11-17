@@ -5,7 +5,7 @@ namespace NetSwitch;
 
 public enum PopupKind { Info, Success, Error, Change }
 
-public sealed class PopupContent
+public sealed record PopupContent
 {
     public PopupKind Kind { get; init; } = PopupKind.Info;
     public string Title { get; init; } = "";
@@ -65,7 +65,7 @@ public sealed class PopupForm : Form
     NetCheckResult _net = new(NetHealth.Checking, "Checking internet…", "Pinging 1.1.1.1 and 8.8.8.8, resolving DNS");
     Rectangle _netRect;
     readonly System.Windows.Forms.Timer _netTimer = new() { Interval = 4000 };
-    readonly System.Windows.Forms.Timer _actTimer = new() { Interval = 180 };
+    readonly System.Windows.Forms.Timer _actTimer = new() { Interval = 250 };
     Dictionary<string, long> _lastBytes = new();
     readonly HashSet<int> _blinkOn = new();
     bool _netBusy, _actBusy;

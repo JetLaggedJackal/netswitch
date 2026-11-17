@@ -53,7 +53,8 @@ static class Preview
             case "profiles":
                 var ph = new Form { ShowInTaskbar = false, Opacity = 0, Size = new Size(1, 1) };
                 var psnap = new Dictionary<string, AdapterInfo>(StringComparer.OrdinalIgnoreCase);
-                ph.Shown += (_, _) => PopupForm.Show(PopupBuilder.Profiles(cfg.Profiles, psnap, false, _ => { }), 600);
+                var prevS = new PreviousSettings { Settings = new Profile { Name = "Previous settings", Adapter = "Wi-Fi", Dhcp = true }, At = DateTime.Now.AddMinutes(-3) };
+                ph.Shown += (_, _) => PopupForm.Show(PopupBuilder.Profiles(cfg.Profiles, psnap, false, _ => { }, ("Wi-Fi", prevS), _ => { }), 600);
                 Application.Run(ph);
                 break;
             case "menu":

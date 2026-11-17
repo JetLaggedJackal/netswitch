@@ -31,6 +31,12 @@ public sealed class Profile
     public override string ToString() => string.IsNullOrWhiteSpace(Name) ? "(unnamed)" : Name;
 }
 
+public sealed class PreviousSettings
+{
+    public Profile Settings { get; set; } = new();
+    public DateTime At { get; set; }
+}
+
 public sealed class AppConfig
 {
     public List<Profile> Profiles { get; set; } = new();
@@ -47,6 +53,11 @@ public sealed class AppConfig
     public DateTime? LastUpdateCheck { get; set; }
     /// <summary>Version the user chose to skip in the daily reminder.</summary>
     public string? SkippedVersion { get; set; }
+    /// <summary>Each adapter's settings from just before the last switch, for "Return to previous settings".</summary>
+    public Dictionary<string, PreviousSettings> Previous { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>After a switch, go back automatically unless the user clicks Keep in time.</summary>
+    public bool SafeSwitch { get; set; }
+    public int SafeSwitchSeconds { get; set; } = 30;
 
     [JsonIgnore] public string Path { get; private set; } = DefaultPath;
 
@@ -77,6 +88,7 @@ public sealed class AppConfig
         cfg.Profiles ??= new();
         cfg.WatchAdapters ??= new();
         cfg.HiddenAdapters ??= new();
+        cfg.Previous = new Dictionary<string, PreviousSettings>(cfg.Previous ?? new(), StringComparer.OrdinalIgnoreCase);
         foreach (var p in cfg.Profiles) p.Dns ??= new();
         return cfg;
     }

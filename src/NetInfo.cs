@@ -13,6 +13,9 @@ public sealed record AdapterInfo(
     IReadOnlyList<string> Gateways,
     IReadOnlyList<string> Dns)
 {
+    public string Id { get; init; } = "";
+    /// <summary>True when DNS servers come from DHCP (no static NameServer set for the adapter).</summary>
+    public bool DnsFromDhcp { get; init; } = true;
     public string Mac { get; init; } = "";
     public long SpeedBps { get; init; }
     public bool IsWireless { get; init; }
@@ -72,6 +75,8 @@ public static class NetInfo
                 result[nic.Name] = new AdapterInfo(nic.Name, nic.Description,
                     nic.OperationalStatus == OperationalStatus.Up, v4.IsDhcpEnabled, addrs, gws, dns)
                 {
+                    Id = nic.Id,
+                    DnsFromDhcp = !HasStaticDns(nic.Id),
                     Mac = string.Join("-", macBytes.Select(b => b.ToString("X2"))),
                     SpeedBps = SafeSpeed(nic),
                     IsWireless = nic.NetworkInterfaceType == NetworkInterfaceType.Wireless80211,
@@ -103,6 +108,37 @@ public static class NetInfo
             .FirstOrDefault();
 
     static long SafeSpeed(NetworkInterface n) { try { return n.Speed; } catch { return 0; } }
+
+    /// <summary>Windows keeps hand-set DNS servers in the adapter's NameServer registry value; DHCP ones elsewhere.</summary>
+    static bool HasStaticDns(string id)
+    {
+        if (!OperatingSystem.IsWindows()) return false;
+        try
+        {
+            using var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{id}");
+            return k?.GetValue("NameServer") is string ns && ns.Trim().Length > 0;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>The adapter's current IPv4 settings as a profile, so they can be put back later.</summary>
+    public static Profile? CurrentAsProfile(AdapterInfo a, string name)
+    {
+        if (a.Dhcp)
+            return new Profile { Name = name, Adapter = a.Name, Dhcp = true, DnsAuto = a.DnsFromDhcp, Dns = a.DnsFromDhcp ? new() : a.Dns.Take(2).ToList() };
+        if (a.Addresses.Count == 0) return null; // nothing meaningful to go back to
+        var (ip, mask) = a.Addresses[0];
+        return new Profile
+        {
+            Name = name, Adapter = a.Name, Dhcp = false, Ip = ip, Mask = mask.Length > 0 ? mask : "255.255.255.0",
+            Gateway = a.Gateways.FirstOrDefault() ?? "", Dns = a.Dns.Take(2).ToList(), DnsAuto = false,
+        };
+    }
+
+    /// <summary>"192.168.1.73/24, static" or "DHCP".</summary>
+    public static string Describe(Profile p) => p.Dhcp
+        ? "DHCP" + (p.UsesAutoDns ? "" : ", custom DNS")
+        : $"{IpUtil.SplitIp(p.Ip).ip}/{PrefixLength(IpUtil.SplitIp(p.Ip).prefixMask ?? IpUtil.NormalizeMask(p.Mask) ?? "")}, static";
 
     public static int PrefixLength(string mask)
     {
@@ -151,7 +187,13 @@ public static class NetInfo
     public static bool Matches(Profile p, AdapterInfo? a)
     {
         if (a == null) return false;
-        if (p.Dhcp) return a.Dhcp;
+        if (p.Dhcp)
+        {
+            if (!a.Dhcp) return false;
+            if (p.UsesAutoDns) return a.DnsFromDhcp;
+            var want = p.Dns.Where(d => !string.IsNullOrWhiteSpace(d)).Select(d => d.Trim()).ToList();
+            return !a.DnsFromDhcp && want.SequenceEqual(a.Dns.Take(want.Count));
+        }
         if (a.Dhcp) return false;
         var ip = IpUtil.SplitIp(p.Ip).ip;
         return a.Addresses.Any(x => x.Ip == ip);
@@ -202,7 +244,26 @@ public static class IpUtil
         if (!IsIPv4(ip)) return $"\"{p.Name}\": \"{p.Ip}\" is not a valid IPv4 address.";
         if ((prefMask ?? NormalizeMask(p.Mask)) == null) return $"\"{p.Name}\": \"{p.Mask}\" is not a valid subnet mask.";
         if (!string.IsNullOrWhiteSpace(p.Gateway) && !IsIPv4(p.Gateway)) return $"\"{p.Name}\": gateway \"{p.Gateway}\" is not a valid IPv4 address.";
+        var m = ToUInt(prefMask ?? NormalizeMask(p.Mask)!);
+        var a = ToUInt(ip);
+        if (m != uint.MaxValue && m != 0xFFFFFFFE)
+        {
+            if ((a & ~m) == 0) return $"\"{p.Name}\": {ip} is the network address of that subnet, not a usable host address.";
+            if ((a & ~m) == ~m) return $"\"{p.Name}\": {ip} is the broadcast address of that subnet, not a usable host address.";
+        }
+        if (!string.IsNullOrWhiteSpace(p.Gateway))
+        {
+            var g = ToUInt(p.Gateway.Trim());
+            if ((g & m) != (a & m)) return $"\"{p.Name}\": gateway {p.Gateway.Trim()} is not in the same subnet as {ip}/{NetInfo.PrefixLength(prefMask ?? NormalizeMask(p.Mask)!)}.";
+            if (g == a) return $"\"{p.Name}\": the gateway can't be the same as the IP address.";
+        }
         return ValidateDns(p);
+    }
+
+    static uint ToUInt(string ip)
+    {
+        var b = IPAddress.Parse(ip.Trim()).GetAddressBytes();
+        return (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
     }
 
     static string? ValidateDns(Profile p)
