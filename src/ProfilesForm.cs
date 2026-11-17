@@ -9,6 +9,8 @@ public sealed class ProfilesForm : Form
     public Action<PopupContent>? TestPopup;
     /// <summary>Turns "Start with Windows" on/off right away (may show UAC); returns whether it worked.</summary>
     public Func<bool, Task<bool>>? StartupToggle;
+    /// <summary>Quits the whole app (used after an update has been swapped in).</summary>
+    public Action? ExitApp;
 
     readonly Theme _t = Theme.Current;
     readonly AppConfig _cfg;
@@ -29,7 +31,10 @@ public sealed class ProfilesForm : Form
     readonly TableLayoutPanel _ipGrid, _dnsGrid;
     readonly ModernButton _fill;
     // notifications
-    readonly ToggleSwitch _notifyOn, _sticky, _startup;
+    readonly ToggleSwitch _notifyOn, _sticky, _startup, _autoUpdate;
+    readonly ModernButton _updateBtn;
+    readonly Label _updateStatus;
+    Updater.Release? _available;
     bool _startupBusy;
     readonly List<AdapterRow> _watchRows = new();
     // footer
@@ -134,7 +139,7 @@ public sealed class ProfilesForm : Form
         _ipMode = new SegmentedControl(_t, "Automatic (DHCP)", "Manual") { Margin = new Padding(0, 0, 0, 8) };
         _ipHint = Ui.Label(_t, "Your router assigns the IP address, subnet mask and gateway.", 8.5f, sub: true);
         _ipHint.Margin = new Padding(1, 0, 0, 4);
-        _ip = new ModernTextBox(_t) { PlaceholderText = "192.168.1.50" };
+        _ip = new ModernTextBox(_t) { PlaceholderText = "192.168.1.50 or 192.168.1.50/24" };
         _mask = new ModernTextBox(_t) { PlaceholderText = "255.255.255.0 or 24" };
         _gw = new ModernTextBox(_t) { PlaceholderText = "Optional" };
         _fill = new ModernButton(_t, "Fill in from adapter") { Ghost = true, Anchor = AnchorStyles.Left | AnchorStyles.Bottom, Width = 170, Margin = new Padding(0, 0, 0, 10) };
@@ -157,6 +162,21 @@ public sealed class ProfilesForm : Form
         _ipMode.SelectedIndexChanged += (_, _) => { Edit(p => p.Dhcp = _ipMode.SelectedIndex == 0, refresh: true); UpdateVisibility(); };
         _dnsMode.SelectedIndexChanged += (_, _) => { Edit(p => p.DnsAuto = _dnsMode.SelectedIndex == 0, refresh: true); UpdateVisibility(); };
         _ip.TextChanged += (_, _) => Edit(p => p.Ip = _ip.Text.Trim(), refresh: true);
+        // "192.168.1.50/24" in the IP box: keep the address, put 255.255.255.0 in the mask box.
+        _ip.Leave += (_, _) =>
+        {
+            var (ip, mask) = IpUtil.SplitIp(_ip.Text);
+            if (mask == null || !IpUtil.IsIPv4(ip)) return;
+            _ip.Text = ip;
+            _mask.Text = mask;
+        };
+        // "24" or "/24" in the mask box becomes 255.255.255.0.
+        _mask.Leave += (_, _) =>
+        {
+            var t = _mask.Text.Trim();
+            if (t.Length == 0 || IpUtil.IsIPv4(t)) return;
+            if (IpUtil.NormalizeMask(t) is { } dotted) _mask.Text = dotted;
+        };
         _mask.TextChanged += (_, _) => Edit(p => p.Mask = _mask.Text.Trim());
         _gw.TextChanged += (_, _) => Edit(p => p.Gateway = _gw.Text.Trim());
         _dns1.TextChanged += (_, _) => Edit(SetDns);
@@ -168,7 +188,7 @@ public sealed class ProfilesForm : Form
         nSub.Margin = new Padding(0, 2, 0, 12);
 
         _startup = new ToggleSwitch(_t, "Start with Windows") { Width = 420, Checked = startupEnabled, Margin = new Padding(0, 0, 0, 2) };
-        var startupHint = Ui.Label(_t, "Starts at sign-in with admin rights, so switching never asks for permission.", 8.5f, sub: true);
+        var startupHint = Ui.Label(_t, "Starts at sign-in as admin, so switching never asks.", 8.5f, sub: true);
         startupHint.MaximumSize = new Size(560, 0);
         startupHint.Margin = new Padding(52, 0, 0, 4);
         _startup.CheckedChanged += async (_, _) => await OnStartupToggled();
@@ -193,7 +213,20 @@ public sealed class ProfilesForm : Form
             rows.Add(row);
         }
         var watch = CardWith("Adapters", rows.ToArray());
-        BuildPage(_notifyPage, nTitle, nSub, startupCard, behaviour, watch);
+        var version = Ui.Label(_t, $"NetSwitch {Updater.CurrentText}", 9f);
+        version.Margin = new Padding(0, 0, 0, 6);
+        _updateBtn = new ModernButton(_t, "Check for updates") { Width = 170, Margin = new Padding(0, 0, 12, 0) };
+        _updateBtn.Click += async (_, _) => await OnUpdateClicked();
+        _updateStatus = Ui.Label(_t, "", 8.5f, sub: true);
+        _updateStatus.Anchor = AnchorStyles.Left;
+        _updateStatus.Margin = new Padding(0, 7, 0, 0);
+        var updateRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = _t.Panel, Margin = new Padding(0, 0, 0, 6) };
+        updateRow.Controls.Add(_updateBtn);
+        updateRow.Controls.Add(_updateStatus);
+        _autoUpdate = new ToggleSwitch(_t, "Check for updates once a day") { Width = 420, Checked = cfg.AutoCheckUpdates, Margin = new Padding(0, 0, 0, 2) };
+        var updatesCard = CardWith("Updates", version, updateRow, _autoUpdate);
+
+        BuildPage(_notifyPage, nTitle, nSub, startupCard, behaviour, watch, updatesCard);
 
         // ---------- empty state ----------
         var emptyTitle = Ui.Label(_t, "No profiles yet", 14f, FontStyle.Bold);
@@ -479,6 +512,42 @@ public sealed class ProfilesForm : Form
         _dns2.Text = a.Dns.ElementAtOrDefault(1) ?? "";
     }
 
+    async Task OnUpdateClicked()
+    {
+        _updateBtn.Enabled = false;
+        _updateStatus.ForeColor = _t.SubText;
+        try
+        {
+            if (_available == null)
+            {
+                _updateStatus.Text = "Checking…";
+                var r = await Updater.GetLatestAsync();
+                if (r == null) { _updateStatus.Text = "No releases published yet."; return; }
+                if (!Updater.IsNewer(r)) { _updateStatus.Text = $"You're up to date ({Updater.CurrentText})."; return; }
+                _available = r;
+                _updateBtn.Primary = true;
+                _updateBtn.Text = $"Update to {r.Version}";
+                _updateStatus.Text = $"{r.Size / 1048576.0:0} MB download";
+                return;
+            }
+            var progress = new Progress<int>(p => _updateStatus.Text = $"Downloading… {p}%");
+            await Updater.DownloadAndSwapAsync(_available, progress);
+            _updateStatus.Text = "Restarting…";
+            ExitApp?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            _updateStatus.ForeColor = _t.Danger;
+            _updateStatus.Text = "Update failed: " + ex.Message;
+        }
+        finally
+        {
+            if (!IsDisposed) _updateBtn.Enabled = true;
+        }
+    }
+
+    public void ShowSettings() => ShowPage(_notifyPage);
+
     async Task OnStartupToggled()
     {
         if (_startupBusy || StartupToggle == null) return;
@@ -519,6 +588,7 @@ public sealed class ProfilesForm : Form
         _cfg.HiddenAdapters = _watchRows.Where(r => !r.ShowInMenu).Select(r => r.AdapterName).ToList();
         _cfg.NotifyOnIpChange = _notifyOn.Checked;
         _cfg.PopupStaysOpen = _sticky.Checked;
+        _cfg.AutoCheckUpdates = _autoUpdate.Checked;
         try { _cfg.Save(); }
         catch (Exception ex) { Fail("Could not save: " + ex.Message, null); return; }
         Saved?.Invoke(_cfg);
@@ -611,7 +681,7 @@ public sealed class AdapterHeader : Control
         using var f = Theme.UiFont(8.25f);
         int col = LogicalToDeviceUnits(AdapterColumns.Width);
         var flags = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter;
-        TextRenderer.DrawText(g, "Show in menu", f, new Rectangle(Width - col * 2, 0, col, Height), _t.SubText, flags);
+        TextRenderer.DrawText(g, "Show in list", f, new Rectangle(Width - col * 2, 0, col, Height), _t.SubText, flags);
         TextRenderer.DrawText(g, "Pop up on change", f, new Rectangle(Width - col, 0, col, Height), _t.SubText, flags);
         TextRenderer.DrawText(g, "Adapter", f, new Rectangle(0, 0, Width - col * 2, Height), _t.SubText, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPadding);
     }

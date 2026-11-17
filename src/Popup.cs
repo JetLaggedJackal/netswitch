@@ -22,6 +22,9 @@ public sealed class PopupContent
     public List<(string Name, string Line, string? Copy, bool Up)> Entries { get; init; } = new();
     public bool ShowExit { get; init; }
     public bool CloseOnOutsideClick { get; init; }
+    /// <summary>Optional main button (replaces "Copy IP").</summary>
+    public string? ActionText { get; init; }
+    public Action? Action { get; init; }
 }
 
 /// <summary>Custom notification window: bottom-right, no focus stealing, stacks, rich content.</summary>
@@ -80,7 +83,13 @@ public sealed class PopupForm : Form
         _fSuffix = Theme.UiFont(12f);
         Font = _fBody;
 
-        if (!string.IsNullOrEmpty(c.CopyText))
+        if (c.ActionText != null && c.Action != null)
+        {
+            _copy = new ModernButton(_t, c.ActionText, primary: true) { Font = _fBody, TabStop = false };
+            _copy.Click += (_, _) => { BeginClose(); c.Action(); };
+            Controls.Add(_copy);
+        }
+        else if (!string.IsNullOrEmpty(c.CopyText))
         {
             _copy = new ModernButton(_t, "Copy IP", primary: true) { Font = _fBody, TabStop = false };
             _copy.Click += (_, _) =>

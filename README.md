@@ -20,9 +20,10 @@ Put the exe anywhere you like (for example `C:\Tools\NetSwitch\`) and run it.
 - **Left-click the tray icon:** your profiles. Click one to switch; the active one has a dot.
 - **Right-click the tray icon:** every adapter with its IP, DHCP/static, gateway and matching profile. Click an adapter to copy its IP. Settings and Exit are here too.
 - **Settings…** opens the window where you:
-  - add, duplicate and delete profiles: name, adapter, IP Automatic/Manual, DNS Automatic/Manual (DHCP with your own DNS works);
+  - add, duplicate and delete profiles: name, adapter, IP Automatic/Manual, DNS Automatic/Manual (DHCP with your own DNS works). Type `192.168.1.50/24` in the IP box or `24` in the mask box and the mask fills in as 255.255.255.0;
   - turn on **Start with Windows** (starts at sign-in with admin rights, so switching never shows a UAC prompt);
   - choose pop-up behaviour, and per adapter whether it shows in the right-click list and whether it pops up when its IP changes.
+  - check for updates (or let it check once a day): it downloads the newest release from GitHub and restarts itself.
 - When a watched adapter's IP changes, a pop-up shows the old and new IP, mask, gateway, DNS, DHCP server and lease, Wi-Fi name, matching profile, link speed and MAC.
 
 ## Where settings live
@@ -60,3 +61,7 @@ dotnet publish -c Release --self-contained true -p:EnableCompressionInSingleFile
 To uninstall: untick "Start with Windows", exit from the tray menu, delete the exe and `%APPDATA%\NetSwitch`.
 
 `NetSwitch.exe --preview editor|notify|popup|applied|error|menu` shows one piece of the UI on its own (for design checks).
+
+## Releases and updates
+
+Every push to `main` that changes `src/` builds `NetSwitch.exe` on GitHub Actions and publishes it as the latest release (version `1.0.<build number>`). NetSwitch's **Check for updates** button downloads that release, swaps the exe in place and restarts. This works when NetSwitch lives in a folder you can write to, such as `%LOCALAPPDATA%\Programs\NetSwitch`.

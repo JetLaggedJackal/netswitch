@@ -55,6 +55,11 @@ public sealed class TrayApp : ApplicationContext
         NetworkChange.NetworkAddressChanged += OnAddressChanged;
         NetworkChange.NetworkAvailabilityChanged += OnAvailabilityChanged;
 
+        // Daily update check: first one a minute after start, then every few hours we look whether a day has passed.
+        _updateTimer = new System.Windows.Forms.Timer { Interval = 60_000 };
+        _updateTimer.Tick += async (_, _) => { _updateTimer.Interval = 3 * 3600_000; await DailyUpdateCheckAsync(); };
+        if (previewConfig == null) _updateTimer.Start();
+
         if (firstRun)
         {
             Popup(PopupBuilder.Info("NetSwitch is running",
@@ -83,6 +88,38 @@ public sealed class TrayApp : ApplicationContext
     // ---------------- menu ----------------
 
     PopupForm? _overview;
+    readonly System.Windows.Forms.Timer _updateTimer;
+
+    async Task DailyUpdateCheckAsync()
+    {
+        var cfg = AppConfig.Load();
+        if (!cfg.AutoCheckUpdates) return;
+        if (cfg.LastUpdateCheck is { } last && DateTime.UtcNow - last < TimeSpan.FromHours(23)) return;
+        Updater.Release? r;
+        try { r = await Updater.GetLatestAsync(); }
+        catch { return; } // offline: try again later
+        cfg.LastUpdateCheck = DateTime.UtcNow;
+        try { cfg.Save(); } catch { }
+        _cfg = cfg;
+        if (r == null || !Updater.IsNewer(r) || cfg.SkippedVersion == r.Version.ToString()) return;
+
+        var notes = r.Notes.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim() ?? "";
+        Popup(new PopupContent
+        {
+            Kind = PopupKind.Info,
+            Title = "Update available",
+            Heading = $"NetSwitch {r.Version}",
+            SubHeading = $"You have {Updater.CurrentText}",
+            Message = notes.Length > 0 ? notes : null,
+            ActionText = "Update now",
+            Action = async () =>
+            {
+                try { await Updater.DownloadAndSwapAsync(r, null); ExitThread(); }
+                catch (Exception ex) { Popup(PopupBuilder.Error("Update failed", ex.Message)); }
+            },
+            Sticky = true,
+        });
+    }
 
     void ShowProfileMenu()
     {
@@ -161,6 +198,7 @@ public sealed class TrayApp : ApplicationContext
         if (_editor is { IsDisposed: false }) { _editor.Activate(); return; }
         _editor = new ProfilesForm(AppConfig.Load(), _icon.Icon ?? SystemIcons.Application, Startup.IsEnabled());
         _editor.StartupToggle = ToggleStartupAsync;
+        _editor.ExitApp = ExitThread;
         _editor.Saved += cfg => { _cfg = cfg; UpdateTooltip(); };
         _editor.TestPopup = c => Popup(c);
         _editor.Show();
@@ -288,6 +326,7 @@ public sealed class TrayApp : ApplicationContext
     {
         NetworkChange.NetworkAddressChanged -= OnAddressChanged;
         NetworkChange.NetworkAvailabilityChanged -= OnAvailabilityChanged;
+        _updateTimer.Stop();
         _editor?.Close();
         _icon.Visible = false;
         _icon.Dispose();

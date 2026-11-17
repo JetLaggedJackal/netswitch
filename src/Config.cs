@@ -42,6 +42,11 @@ public sealed class AppConfig
     /// <summary>Keep pop-ups open until closed by hand.</summary>
     public bool PopupStaysOpen { get; set; }
     public int PopupSeconds { get; set; } = 10;
+    /// <summary>Look for a new version on GitHub once a day.</summary>
+    public bool AutoCheckUpdates { get; set; } = true;
+    public DateTime? LastUpdateCheck { get; set; }
+    /// <summary>Version the user chose to skip in the daily reminder.</summary>
+    public string? SkippedVersion { get; set; }
 
     [JsonIgnore] public string Path { get; private set; } = DefaultPath;
 

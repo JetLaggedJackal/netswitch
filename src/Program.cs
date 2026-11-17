@@ -8,6 +8,10 @@ static class Program
         if (args.Length > 0 && args[0] == "--preview")
             return Preview.Run(args.Length > 1 ? args[1] : "editor");
 
+        bool afterUpdate = args.Length > 0 && args[0] == "--after-update";
+        if (afterUpdate) { Updater.AfterUpdate(args); args = Array.Empty<string>(); }
+        else if (args.Length == 0) Updater.CleanupLeftovers();
+
         // Elevated helper modes: started by the tray app through UAC, do one job and exit.
         if (args.Length > 0 && args[0].StartsWith("--"))
             return RunHelper(args);

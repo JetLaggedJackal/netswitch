@@ -1,0 +1,40 @@
+name: Release
+
+# Every push to main that touches the app builds NetSwitch.exe and publishes it
+# as the latest GitHub release. The app's "Check for updates" button reads it.
+on:
+  push:
+    branches: [main]
+    paths: ['src/**', '.github/workflows/release.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $version = "1.0.${{ github.run_number }}"
+          dotnet publish src -c Release --self-contained true -p:EnableCompressionInSingleFile=true -p:Version=$version -o out
+          if (-not (Test-Path out/NetSwitch.exe)) { throw "NetSwitch.exe was not produced" }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          $notes = if ($env:COMMIT_MESSAGE) { $env:COMMIT_MESSAGE } else { "Manual build" }
+          Set-Content -Path notes.md -Value $notes -Encoding utf8
+          gh release create "v$env:VERSION" out/NetSwitch.exe --title "NetSwitch $env:VERSION" --notes-file notes.md --latest
