@@ -46,6 +46,12 @@ static class Preview
                 oh.Shown += (_, _) => PopupForm.Show(PopupBuilder.Overview(fake, cfg.Profiles), 600);
                 Application.Run(oh);
                 break;
+            case "profiles":
+                var ph = new Form { ShowInTaskbar = false, Opacity = 0, Size = new Size(1, 1) };
+                var psnap = new Dictionary<string, AdapterInfo>(StringComparer.OrdinalIgnoreCase);
+                ph.Shown += (_, _) => PopupForm.Show(PopupBuilder.Profiles(cfg.Profiles, psnap, false, _ => { }), 600);
+                Application.Run(ph);
+                break;
             case "menu":
                 var app = new TrayApp(cfg);
                 var menu = (ContextMenuStrip)typeof(TrayApp).GetField("_menu", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(app)!;

@@ -108,7 +108,38 @@ public static class PopupBuilder
             Title = "Network adapters",
             Entries = entries,
             Message = entries.Count == 0 ? "No adapters to show. Hidden adapters can be turned back on in Settings." : null,
-            ShowExit = true,
+            CloseOnOutsideClick = true,
+            Sticky = true,
+        };
+    }
+
+    /// <summary>Left-click picker: one entry per profile, click to switch. Same look and place as the overview.</summary>
+    public static PopupContent Profiles(IReadOnlyList<Profile> profiles, IReadOnlyDictionary<string, AdapterInfo> snap, bool busy, Action<Profile> apply)
+    {
+        var entries = new List<PopupEntry>();
+        foreach (var p in profiles)
+        {
+            snap.TryGetValue(p.Adapter, out var a);
+            bool active = NetInfo.Matches(p, a);
+            var ip = IpUtil.SplitIp(p.Ip).ip;
+            var what = p.Dhcp ? "DHCP" : string.Equals(ip, p.Name.Trim(), StringComparison.OrdinalIgnoreCase) ? "Fixed IP" : $"Fixed {ip}";
+            var dnsList = p.Dns.Where(d => !string.IsNullOrWhiteSpace(d)).ToList();
+            var dns = p.UsesAutoDns || dnsList.Count == 0 ? null : "DNS " + string.Join(", ", dnsList);
+            var rest = string.Join("  ·  ", new[] { p.Adapter, dns }.Where(x => !string.IsNullOrEmpty(x)));
+            var profile = p;
+            entries.Add(new PopupEntry(p.Name, what, null, active, null, rest)
+            {
+                Click = busy ? null : () => apply(profile),
+                Hint = "Switch",
+                Badge = active ? "Active" : null,
+            });
+        }
+        return new PopupContent
+        {
+            Kind = PopupKind.Info,
+            Title = busy ? "Switching…" : "Switch profile",
+            Entries = entries,
+            Message = entries.Count == 0 ? "No profiles yet. Create one in Settings." : null,
             CloseOnOutsideClick = true,
             Sticky = true,
         };

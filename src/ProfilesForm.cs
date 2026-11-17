@@ -184,7 +184,7 @@ public sealed class ProfilesForm : Form
 
         // ---------- settings page ----------
         var nTitle = Ui.Label(_t, "Settings", 14f, FontStyle.Bold);
-        var nSub = Ui.Label(_t, "Startup, pop-ups, and which adapters NetSwitch shows and watches.", 8.75f, sub: true);
+        var nSub = Ui.Label(_t, "Startup, pop-ups, adapters and updates.", 8.75f, sub: true);
         nSub.Margin = new Padding(0, 2, 0, 12);
 
         _startup = new ToggleSwitch(_t, "Start with Windows") { Width = 420, Checked = startupEnabled, Margin = new Padding(0, 0, 0, 2) };
@@ -192,7 +192,9 @@ public sealed class ProfilesForm : Form
         startupHint.MaximumSize = new Size(560, 0);
         startupHint.Margin = new Padding(52, 0, 0, 4);
         _startup.CheckedChanged += async (_, _) => await OnStartupToggled();
-        var startupCard = CardWith("Startup", _startup, startupHint);
+        var quit = new ModernButton(_t, "Quit NetSwitch") { Width = 150, Margin = new Padding(0, 8, 0, 0) };
+        quit.Click += (_, _) => { Close(); ExitApp?.Invoke(); };
+        var startupCard = CardWith("Startup", _startup, startupHint, quit);
 
         _notifyOn = new ToggleSwitch(_t, "Pop up when an IP address changes") { Width = 420, Checked = cfg.NotifyOnIpChange, Margin = new Padding(0, 0, 0, 2) };
         _sticky = new ToggleSwitch(_t, "Keep pop-ups open until I close them") { Width = 420, Checked = cfg.PopupStaysOpen, Margin = new Padding(0, 0, 0, 2) };
@@ -218,6 +220,7 @@ public sealed class ProfilesForm : Form
         _updateBtn = new ModernButton(_t, "Check for updates") { Width = 170, Margin = new Padding(0, 0, 12, 0) };
         _updateBtn.Click += async (_, _) => await OnUpdateClicked();
         _updateStatus = Ui.Label(_t, "", 8.5f, sub: true);
+        _updateStatus.MaximumSize = new Size(380, 0); // wrap long errors instead of cutting them off
         _updateStatus.Anchor = AnchorStyles.Left;
         _updateStatus.Margin = new Padding(0, 7, 0, 0);
         var updateRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = _t.Panel, Margin = new Padding(0, 0, 0, 6) };
@@ -532,8 +535,9 @@ public sealed class ProfilesForm : Form
                 _updateStatus.Text = $"{r.Size / 1048576.0:0} MB download";
                 return;
             }
+            if (Updater.IsUpdating) { _updateStatus.Text = "An update is already downloading…"; return; }
             var progress = new Progress<int>(p => _updateStatus.Text = $"Downloading… {p}%");
-            await Updater.DownloadAndSwapAsync(_available, progress);
+            if (!await Updater.DownloadAndSwapAsync(_available, progress)) { _updateStatus.Text = "An update is already downloading…"; return; }
             _updateStatus.Text = "Restarting…";
             ExitApp?.Invoke();
         }

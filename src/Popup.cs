@@ -29,7 +29,15 @@ public sealed class PopupContent
 }
 
 /// <summary>One adapter in the overview. The second line reads: Line · gw Gateway · Rest.</summary>
-public sealed record PopupEntry(string Name, string Line, string? Copy, bool Up, string? Gateway = null, string Rest = "");
+public sealed record PopupEntry(string Name, string Line, string? Copy, bool Up, string? Gateway = null, string Rest = "")
+{
+    /// <summary>When set, clicking the entry runs this and closes the pop-up instead of copying.</summary>
+    public Action? Click { get; init; }
+    /// <summary>Hint shown on the right while hovered (default "Copy IP").</summary>
+    public string? Hint { get; init; }
+    /// <summary>Hint shown on the right all the time, in the accent colour (e.g. "Active").</summary>
+    public string? Badge { get; init; }
+}
 
 /// <summary>Custom notification window: bottom-right, no focus stealing, stacks, rich content.</summary>
 public sealed class PopupForm : Form
@@ -359,7 +367,9 @@ public sealed class PopupForm : Form
         {
             var (name, line, copy, up, gw, rest) = _c.Entries[i];
             var r = _entryRects[i];
-            if (i == _hoverEntry && copy != null)
+            var entry = _c.Entries[i];
+            bool clickable = copy != null || entry.Click != null;
+            if (i == _hoverEntry && clickable)
                 using (var hb = new SolidBrush(_t.SurfaceHover)) using (var hp = Theme.RoundRect(r, 5)) g.FillPath(hb, hp);
             int lh = TextRenderer.MeasureText("Ag", _fHeading).Height;
             int edot = Px(8);
@@ -368,10 +378,11 @@ public sealed class PopupForm : Form
             int tx = r.X + Px(24), etw = r.Width - Px(32);
             var flags = TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
             TextRenderer.DrawText(g, name, _fHeading, new Rectangle(tx, r.Y + Px(5), etw - Px(60), lh), _t.Text, flags);
-            if (i == _copiedEntry || (i == _hoverEntry && copy != null))
+            if (i == _copiedEntry || (i == _hoverEntry && clickable) || entry.Badge != null)
             {
-                var hint = i == _copiedEntry ? "Copied" : "Copy IP";
-                TextRenderer.DrawText(g, hint, _fSub, new Rectangle(tx, r.Y + Px(5), etw, lh), i == _copiedEntry ? _t.Success : _t.SubText,
+                var hint = i == _copiedEntry ? "Copied" : entry.Badge ?? entry.Hint ?? "Copy IP";
+                var hc = i == _copiedEntry ? _t.Success : entry.Badge != null ? _t.Accent : _t.SubText;
+                TextRenderer.DrawText(g, hint, _fSub, new Rectangle(tx, r.Y + Px(5), etw, lh), hc,
                     TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             }
             var lineRect = new Rectangle(tx, r.Y + Px(5) + lh, etw, r.Height - lh - Px(5));
@@ -413,7 +424,7 @@ public sealed class PopupForm : Form
         int he = _entryRects.FindIndex(r => r.Contains(e.Location));
         int hg = GatewayAt(e.Location);
         if (he != _hoverEntry || hg != _hoverGw) { _hoverEntry = he; _hoverGw = hg; Invalidate(); }
-        Cursor = h || hg >= 0 || (he >= 0 && _c.Entries[he].Copy != null) ? Cursors.Hand : Cursors.Default;
+        Cursor = h || hg >= 0 || (he >= 0 && (_c.Entries[he].Copy != null || _c.Entries[he].Click != null)) ? Cursors.Hand : Cursors.Default;
     }
 
     protected override void OnMouseLeave(EventArgs e) { _closeHover = false; _hoverEntry = -1; _hoverGw = -1; Invalidate(); }
@@ -454,6 +465,7 @@ public sealed class PopupForm : Form
         int g = GatewayAt(e.Location);
         if (g >= 0) { ShowGatewayTools(g); return; }
         int i = _entryRects.FindIndex(r => r.Contains(e.Location));
+        if (i >= 0 && _c.Entries[i].Click is { } click) { BeginClose(); click(); return; }
         if (i >= 0 && _c.Entries[i].Copy is { } ip)
         {
             try { Clipboard.SetText(ip); _copiedEntry = i; Invalidate(); } catch { }

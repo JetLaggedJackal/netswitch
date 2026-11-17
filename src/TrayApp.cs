@@ -89,7 +89,6 @@ public sealed class TrayApp : ApplicationContext
 
     // ---------------- menu ----------------
 
-    PopupForm? _overview;
     readonly System.Windows.Forms.Timer _updateTimer;
 
     async Task DailyUpdateCheckAsync()
@@ -116,29 +115,39 @@ public sealed class TrayApp : ApplicationContext
             ActionText = "Update now",
             Action = async () =>
             {
-                try { await Updater.DownloadAndSwapAsync(r, null); ExitThread(); }
+                if (Updater.IsUpdating) return;
+                Popup(PopupBuilder.Info("Updating NetSwitch", $"Downloading {r.Version}. NetSwitch restarts by itself when it's done."));
+                try { if (await Updater.DownloadAndSwapAsync(r, null)) ExitThread(); }
                 catch (Exception ex) { Popup(PopupBuilder.Error("Update failed", ex.Message)); }
             },
             Sticky = true,
         });
     }
 
-    void ShowProfileMenu()
+    // Left click = profile picker, right click = adapter overview. Both are the same kind of pop-up in the
+    // same corner; opening one closes the other, clicking the same button again closes it.
+    PopupForm? _panel;
+    string? _panelKind;
+
+    void TogglePanel(string kind, Func<PopupContent> build)
     {
-        _overview?.Dismiss();
-        // NotifyIcon's own ShowContextMenu handles focus so the menu closes properly when clicking away.
-        _icon.ContextMenuStrip = _menu;
-        typeof(NotifyIcon).GetMethod("ShowContextMenu", BindingFlags.Instance | BindingFlags.NonPublic)?.Invoke(_icon, null);
+        bool same = _panelKind == kind && _panel is { IsOpen: true };
+        if (_panel is { IsOpen: true }) _panel.Dismiss();
+        _panel = null; _panelKind = null;
+        if (same) return;
+        _cfg = _fixedConfig ?? AppConfig.Load(); // pick up edits made outside the app
+        _panel = PopupForm.Show(build(), 30);
+        _panelKind = kind;
     }
 
-    void ToggleOverview()
+    void ShowProfileMenu() => TogglePanel("profiles", () =>
+        PopupBuilder.Profiles(_cfg.Profiles, NetInfo.Snapshot(), _busy, p => _ = ApplyAsync(p)));
+
+    void ToggleOverview() => TogglePanel("overview", () =>
     {
-        if (_overview is { IsOpen: true }) { _overview.Dismiss(); _overview = null; return; }
-        _cfg = _fixedConfig ?? AppConfig.Load();
-        var snap = NetInfo.Snapshot();
-        var visible = NetInfo.Ordered(snap.Values).Where(a => !_cfg.IsHidden(a.Name));
-        _overview = PopupForm.Show(PopupBuilder.Overview(visible, _cfg.Profiles), 30);
-    }
+        var visible = NetInfo.Ordered(NetInfo.Snapshot().Values).Where(a => !_cfg.IsHidden(a.Name));
+        return PopupBuilder.Overview(visible, _cfg.Profiles);
+    });
 
     void BuildMenu()
     {
