@@ -25,7 +25,7 @@ public static class NetCheck
         if (pings.All(p => p.Result == null))
         {
             var retry = Targets.Select(t => PingAsync(t, 3000)).ToArray();
-            await Task.WhenAll(retry);
+            await Task.WhenAll(retry.Cast<Task>());
             pings = retry;
         }
 
@@ -105,6 +105,58 @@ public static class NetCheck
             return addrs.Length > 0 ? sw.ElapsedMilliseconds : null;
         }
         catch { return null; }
+    }
+
+    /// <summary>Bytes received and sent per adapter name, for live speeds.</summary>
+    public static Dictionary<string, (long Rx, long Tx)> ByteCountersSplit()
+    {
+        var d = new Dictionary<string, (long, long)>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                try { var s = nic.GetIPStatistics(); d[nic.Name] = (s.BytesReceived, s.BytesSent); } catch { }
+            }
+        }
+        catch { }
+        return d;
+    }
+
+    // Error counters per adapter over the last 10 minutes, sampled by the tray app every 30 s.
+    static readonly object ErrLock = new();
+    static readonly Dictionary<string, List<(DateTime At, long Errors)>> ErrHist = new(StringComparer.OrdinalIgnoreCase);
+
+    public static void SampleErrors()
+    {
+        var now = DateTime.UtcNow;
+        try
+        {
+            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                long e;
+                try { var s = nic.GetIPv4Statistics(); e = s.IncomingPacketsWithErrors + s.OutgoingPacketsWithErrors; } catch { continue; }
+                lock (ErrLock)
+                {
+                    if (!ErrHist.TryGetValue(nic.Name, out var list)) ErrHist[nic.Name] = list = new();
+                    list.Add((now, e));
+                    list.RemoveAll(x => now - x.At > TimeSpan.FromMinutes(10.5));
+                }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>New packet errors on this adapter in the last ~10 minutes (0 until there are two samples).</summary>
+    internal static Func<string, long>? TestErrors; // preview only
+
+    public static long RecentErrors(string adapter)
+    {
+        if (TestErrors != null) return TestErrors(adapter);
+        lock (ErrLock)
+        {
+            if (!ErrHist.TryGetValue(adapter, out var list) || list.Count < 2) return 0;
+            return Math.Max(0, list[^1].Errors - list[0].Errors);
+        }
     }
 
     /// <summary>Total bytes sent + received per adapter name, for activity lights.</summary>

@@ -88,30 +88,51 @@ public static class PopupBuilder
         };
     }
 
-    /// <summary>Right-click overview: every visible adapter with its address.</summary>
+    /// <summary>Right-click overview: the adapter carrying internet traffic first, then the rest; disconnected and
+    /// virtual adapters fold into one line.</summary>
     public static PopupContent Overview(IEnumerable<AdapterInfo> adapters, IEnumerable<Profile> profiles,
         Func<AdapterInfo, List<PopupAction>>? actions = null, Func<AdapterInfo, WifiInfo?>? wifi = null,
-        List<(string, Action)>? buttons = null, bool publicIp = false)
+        List<(string, Action)>? buttons = null, bool publicIp = false, bool compact = false, int internetIndex = -1)
     {
+        var list = adapters.ToList();
+        var ordered = list
+            .OrderByDescending(a => a.IsUp && a.Index == internetIndex && internetIndex > 0)
+            .ThenBy(a => NetInfo.IsBackground(a))
+            .ThenByDescending(a => a.IsUp)
+            .ToList();
         var entries = new List<PopupEntry>();
-        foreach (var a in adapters)
+        foreach (var a in ordered)
         {
-            if (!a.IsUp) { entries.Add(new PopupEntry(a.Name, "Disconnected", null, false) { Actions = actions?.Invoke(a) }); continue; }
+            bool isInternet = a.IsUp && internetIndex > 0 && a.Index == internetIndex;
+            bool vpn = NetInfo.IsVpn(a);
+            bool folded = NetInfo.IsBackground(a) && !isInternet;
+            string? tag = isInternet ? "Internet" : vpn && a.IsUp ? "VPN" : null;
+            if (!a.IsUp)
+            {
+                entries.Add(new PopupEntry(a.Name, "Disconnected", null, false) { Actions = actions?.Invoke(a), Folded = folded, Tag = tag });
+                continue;
+            }
             var ips = a.Addresses.Count == 0 ? "No IPv4 address" : string.Join(", ", a.Addresses.Select(x => x.Mask.Length > 0 ? $"{x.Ip}/{NetInfo.PrefixLength(x.Mask)}" : x.Ip));
             var rest = new List<string> { a.ModeText };
+            if (vpn && NetDetails.UpFor(a.Index) is { } upFor) rest.Add(NetDetails.FormatUp(upFor));
             var speed = NetInfo.FormatSpeed(a.SpeedBps);
             if (speed.Length > 0) rest.Add(speed);
+            var gw = a.Gateways.FirstOrDefault(g => System.Net.IPAddress.TryParse(g, out _));
+            // DNS only when it isn't simply the router: a hand-set or unusual DNS is worth seeing.
+            if (a.Dns.Count > 0 && !(a.Dns.Count == 1 && a.Dns[0] == gw)) rest.Add("DNS " + string.Join(", ", a.Dns.Take(2)));
             var match = profiles.FirstOrDefault(p => string.Equals(p.Adapter, a.Name, StringComparison.OrdinalIgnoreCase) && NetInfo.Matches(p, a));
             if (match != null) rest.Add(match.Name);
-            var gw = a.Gateways.FirstOrDefault(g => System.Net.IPAddress.TryParse(g, out _));
             var w = a.IsWireless ? wifi?.Invoke(a) : null;
             string? line2 = w == null ? null : string.Join("  ·  ", new[]
             {
                 w.Ssid, $"{w.SignalPercent}%", w.Channel > 0 ? $"ch {w.Channel} ({w.Band})" : "", NetDetails.ShortStandard(w.Standard),
             }.Where(x => x.Length > 0));
+            var errors = NetCheck.RecentErrors(a.Name);
             entries.Add(new PopupEntry(a.Name, ips, a.Addresses.FirstOrDefault().Ip, true, gw, string.Join("  ·  ", rest))
             {
                 Actions = actions?.Invoke(a), Line2 = line2, Signal = w?.Bars ?? -1,
+                Tag = tag, Folded = folded,
+                Warning = errors > 10 ? $"{errors:N0} packet errors in 10 min: check cable or driver" : null,
             });
         }
         return new PopupContent
@@ -121,6 +142,7 @@ public static class PopupBuilder
             LiveInternet = true,
             LiveActivity = true,
             PublicIp = publicIp,
+            Compact = compact,
             Buttons = buttons ?? new(),
             Entries = entries,
             Message = entries.Count == 0 ? "No adapters to show. Hidden adapters can be turned back on in Settings." : null,

@@ -21,6 +21,8 @@ public sealed record AdapterInfo(
     public bool IsWireless { get; init; }
     public string? DhcpServer { get; init; }
     public long LeaseSeconds { get; init; }
+    /// <summary>IPv4 interface index, to match routing results.</summary>
+    public int Index { get; init; }
 
     public string AddressText => !IsUp ? "disconnected"
         : Addresses.Count == 0 ? "no address"
@@ -82,6 +84,7 @@ public static class NetInfo
                     IsWireless = nic.NetworkInterfaceType == NetworkInterfaceType.Wireless80211,
                     DhcpServer = v4.IsDhcpEnabled ? dhcpServer : null,
                     LeaseSeconds = v4.IsDhcpEnabled ? lease : 0,
+                    Index = v4.Index,
                 };
             }
             catch { /* adapter vanished mid-enumeration */ }
@@ -93,6 +96,21 @@ public static class NetInfo
         { "virtual", "hyper-v", "vmware", "zerotier", "wintun", "tap-", "tap ", "vpn", "anyconnect", "wireguard", "tailscale", "bluetooth", "loopback", "pseudo" };
 
     /// <summary>Best guess whether this is a real network card (Wi-Fi, Ethernet, USB/dock) rather than a VPN or VM adapter.</summary>
+    static readonly string[] VpnHints =
+        { "zerotier", "wireguard", "tailscale", "wintun", "tap-", "tap ", "vpn", "anyconnect", "openvpn", "fortinet", "forticlient", "globalprotect", "pangp", "juniper", "pulse secure", "sonicwall", "nordlynx", "openconnect" };
+
+    static readonly string[] HiddenByDefaultHints =
+        { "hyper-v", "vmware", "virtualbox", "bluetooth", "loopback", "pseudo", "teredo", "isatap", "kernel debug", "wan miniport" };
+
+    /// <summary>VPN or overlay network adapter (ZeroTier, WireGuard, AnyConnect, ...).</summary>
+    public static bool IsVpn(AdapterInfo a) =>
+        VpnHints.Any(h => a.Description.Contains(h, StringComparison.OrdinalIgnoreCase) || a.Name.Contains(h, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Not worth a full row: disconnected, or a VM/Bluetooth adapter.</summary>
+    public static bool IsBackground(AdapterInfo a) =>
+        !a.IsUp || a.Name.StartsWith("vEthernet", StringComparison.OrdinalIgnoreCase)
+        || HiddenByDefaultHints.Any(h => a.Description.Contains(h, StringComparison.OrdinalIgnoreCase));
+
     public static bool LooksPhysical(AdapterInfo a) =>
         !a.Name.StartsWith("vEthernet", StringComparison.OrdinalIgnoreCase)
         && !VirtualHints.Any(h => a.Description.Contains(h, StringComparison.OrdinalIgnoreCase));

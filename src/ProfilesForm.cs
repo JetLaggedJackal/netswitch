@@ -45,7 +45,7 @@ public sealed class ProfilesForm : Form
     static readonly int[] SafeTimes = { 15, 30, 60, 120, 300 };
     static readonly string[] SafeTimeLabels = { "15 s", "30 s", "1 min", "2 min", "5 min" };
     ToggleSwitch _safe = null!;
-    ToggleSwitch _alerts = null!, _publicIp = null!;
+    ToggleSwitch _alerts = null!, _publicIp = null!, _compact = null!;
     ModernCombo _scanner = null!;
     readonly List<AdapterRow> _watchRows = new();
     // footer
@@ -250,7 +250,8 @@ public sealed class ProfilesForm : Form
         var switching = CardWith("Switching", _safe, safeHint, safeTimeLabel, _safeTimes, _hotkeys, _trayStatus, _swapClicks);
 
         _alerts = new ToggleSwitch(_t, "Alerts: IP conflict, gateway MAC changed, new DHCP server") { Width = 420, Checked = cfg.Alerts, Margin = new Padding(0, 0, 0, 2) };
-        _publicIp = new ToggleSwitch(_t, "Show public IP and ISP in the overview (asks ipinfo.io)") { Width = 420, Checked = cfg.PublicIp, Margin = new Padding(0, 0, 0, 8) };
+        _publicIp = new ToggleSwitch(_t, "Show public IP and ISP in the overview (asks ipinfo.io)") { Width = 420, Checked = cfg.PublicIp, Margin = new Padding(0, 0, 0, 2) };
+        _compact = new ToggleSwitch(_t, "Compact overview: one line per adapter") { Width = 420, Checked = cfg.CompactOverview, Margin = new Padding(0, 0, 0, 8) };
         var scanLabel = Ui.Label(_t, "LAN scanner (opened by Scan LAN)", 8.5f, sub: true);
         scanLabel.Margin = new Padding(0, 4, 0, 3);
         _scanner = new ModernCombo(_t) { Width = 360, Margin = new Padding(0, 0, 10, 0) };
@@ -274,8 +275,8 @@ public sealed class ProfilesForm : Form
         var scanRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = _t.Panel, Margin = new Padding(0, 0, 0, 4) };
         scanRow.Controls.Add(_scanner);
         scanRow.Controls.Add(browse);
-        var scanHint = Ui.Label(_t, "Advanced IP Scanner, Angry IP Scanner, SoftPerfect and Zenmap are found by themselves.", 8.5f, sub: true);
-        var tools = CardWith("Network tools", _alerts, _publicIp, scanLabel, scanRow, scanHint);
+        var scanHint = Ui.Label(_t, "Advanced IP Scanner, Angry IP Scanner, SoftPerfect, Zenmap and Nmap are found by themselves.", 8.5f, sub: true);
+        var tools = CardWith("Network tools", _alerts, _publicIp, _compact, scanLabel, scanRow, scanHint);
 
         var export = new ModernButton(_t, "Export profiles…") { Width = 170, Margin = new Padding(0, 0, 10, 0) };
         var import = new ModernButton(_t, "Import profiles…") { Width = 170, Margin = new Padding(0) };
@@ -776,6 +777,7 @@ public sealed class ProfilesForm : Form
         _cfg.TrayStatus = _trayStatus.Checked;
         _cfg.Alerts = _alerts.Checked;
         _cfg.PublicIp = _publicIp.Checked;
+        _cfg.CompactOverview = _compact.Checked;
         _cfg.LanScanner = _scanner.SelectedItem is NetDetails.Scanner chosen ? chosen.Path : "";
         // Keep what the tray app recorded while this window was open.
         try { var disk = AppConfig.Load(_cfg.Path); _cfg.Previous = disk.Previous; _cfg.GatewayMacs = disk.GatewayMacs; _cfg.DhcpServers = disk.DhcpServers; _cfg.LastUpdateCheck = disk.LastUpdateCheck; _cfg.SkippedVersion = disk.SkippedVersion; } catch { }

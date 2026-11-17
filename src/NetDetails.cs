@@ -364,6 +364,55 @@ public static class NetDetails
         catch { return null; }
     }
 
+    // ---------------- routing ----------------
+
+    [DllImport("iphlpapi.dll")] static extern int GetBestInterface(uint destAddr, out uint bestIfIndex);
+
+    /// <summary>Interface index Windows would use to reach the internet (1.1.1.1), or -1.</summary>
+    public static int InternetIndex()
+    {
+        try { return GetBestInterface(BitConverter.ToUInt32(new byte[] { 1, 1, 1, 1 }, 0), out var i) == 0 ? (int)i : -1; }
+        catch { return -1; }
+    }
+
+    [DllImport("iphlpapi.dll")] static extern int GetIfEntry(IntPtr row);
+
+    /// <summary>How long the adapter has been in its current state (connected), from MIB_IFROW.dwLastChange.</summary>
+    public static TimeSpan? UpFor(int index)
+    {
+        if (index <= 0) return null;
+        var row = Marshal.AllocHGlobal(860);
+        try
+        {
+            for (int i = 0; i < 860; i++) Marshal.WriteByte(row, i, 0);
+            Marshal.WriteInt32(row, 512, index); // dwIndex
+            if (GetIfEntry(row) != 0) return null;
+            uint lastChange = (uint)Marshal.ReadInt32(row, 548); // hundredths of a second since boot
+            uint nowCs = (uint)(Environment.TickCount64 / 10);
+            var up = TimeSpan.FromMilliseconds((double)unchecked(nowCs - lastChange) * 10);
+            // Distrust anything odd (counter wrapped, or the state changed at boot).
+            return up.TotalSeconds < 5 || up > TimeSpan.FromMilliseconds(Environment.TickCount64) ? null : up;
+        }
+        catch { return null; }
+        finally { Marshal.FreeHGlobal(row); }
+    }
+
+    public static string FormatUp(TimeSpan t) =>
+        t.TotalDays >= 1 ? $"up {(int)t.TotalDays} d {t.Hours} h" : t.TotalHours >= 1 ? $"up {(int)t.TotalHours} h {t.Minutes} min" : $"up {Math.Max(1, t.Minutes)} min";
+
+    public static string FormatRate(double bytesPerSec)
+    {
+        var bits = bytesPerSec * 8;
+        return bits >= 1e9 ? $"{bits / 1e9:0.0} Gbps" : bits >= 1e6 ? $"{bits / 1e6:0.0} Mbps" : bits >= 1e3 ? $"{bits / 1e3:0} kbps" : $"{bits:0} bps";
+    }
+
+    /// <summary>"24.6M", "210k", "3k": for the compact overview.</summary>
+    public static string FormatRateShort(double bytesPerSec)
+    {
+        var bits = bytesPerSec * 8;
+        return bits >= 1e9 ? $"{bits / 1e9:0.0}G" : bits >= 1e7 ? $"{bits / 1e6:0}M" : bits >= 1e6 ? $"{bits / 1e6:0.0}M" : bits >= 1e3 ? $"{bits / 1e3:0}k" : $"{bits:0}";
+    }
+
     // ---------------- LAN scanners ----------------
 
     public sealed record Scanner(string Name, string Path);
@@ -379,12 +428,45 @@ public static class NetDetails
             ("Advanced IP Scanner", new[] { $@"{pf86}\Advanced IP Scanner\advanced_ip_scanner.exe", $@"{pf}\Advanced IP Scanner\advanced_ip_scanner.exe" }),
             ("Angry IP Scanner", new[] { $@"{pf}\Angry IP Scanner\ipscan.exe", $@"{pf86}\Angry IP Scanner\ipscan.exe", $@"{local}\Programs\Angry IP Scanner\ipscan.exe" }),
             ("SoftPerfect Network Scanner", new[] { $@"{pf}\SoftPerfect Network Scanner\netscan.exe", $@"{pf86}\SoftPerfect Network Scanner\netscan.exe" }),
-            ("Zenmap (Nmap)", new[] { $@"{pf86}\Nmap\zenmap.exe", $@"{pf}\Nmap\zenmap.exe" }),
+            ("Zenmap (Nmap)", new[]
+            {
+                $@"{pf86}\Nmap\zenmap.exe", $@"{pf}\Nmap\zenmap.exe",
+                $@"{pf86}\Nmap\zenmap\bin\zenmap.exe", $@"{pf}\Nmap\zenmap\bin\zenmap.exe",
+                $@"{pf86}\Nmap\zenmap\zenmap.exe", $@"{pf}\Nmap\zenmap\zenmap.exe",
+            }),
         };
         var found = new List<Scanner>();
         foreach (var (name, paths) in candidates)
             if (paths.FirstOrDefault(File.Exists) is { } p) found.Add(new Scanner(name, p));
+        // Nmap installed somewhere else (registry), and plain nmap when Zenmap wasn't installed with it.
+        var nmapDirs = NmapDirs().Concat(new[] { $@"{pf86}\Nmap", $@"{pf}\Nmap" }).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (!found.Any(f => f.Name.StartsWith("Zenmap")))
+            foreach (var dir in nmapDirs)
+                if (new[] { $@"{dir}\zenmap.exe", $@"{dir}\zenmap\bin\zenmap.exe" }.FirstOrDefault(File.Exists) is { } z) { found.Add(new Scanner("Zenmap (Nmap)", z)); break; }
+        foreach (var dir in nmapDirs)
+            if (File.Exists($@"{dir}\nmap.exe")) { found.Add(new Scanner("Nmap ping sweep (console)", $@"{dir}\nmap.exe")); break; }
         return found;
+    }
+
+    static IEnumerable<string> NmapDirs()
+    {
+        var dirs = new List<string>();
+        foreach (var root in new[] { @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall" })
+        {
+            try
+            {
+                using var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(root);
+                if (k == null) continue;
+                foreach (var sub in k.GetSubKeyNames().Where(n => n.StartsWith("Nmap", StringComparison.OrdinalIgnoreCase)))
+                {
+                    using var e = k.OpenSubKey(sub);
+                    var loc = (e?.GetValue("InstallLocation") as string) ?? Path.GetDirectoryName((e?.GetValue("UninstallString") as string)?.Trim('"') ?? "");
+                    if (!string.IsNullOrWhiteSpace(loc)) dirs.Add(loc.TrimEnd('\\'));
+                }
+            }
+            catch { }
+        }
+        return dirs;
     }
 
     public static string ScannerName(string path)

@@ -35,6 +35,8 @@ public sealed record PopupContent
     public bool HideSettings { get; init; }
     /// <summary>Show public IP and ISP under the internet status (needs LiveInternet).</summary>
     public bool PublicIp { get; init; }
+    /// <summary>One line per entry.</summary>
+    public bool Compact { get; init; }
 }
 
 /// <summary>One adapter in the overview. The second line reads: Line · gw Gateway · Rest.</summary>
@@ -48,6 +50,12 @@ public sealed record PopupEntry(string Name, string Line, string? Copy, bool Up,
     public string? Badge { get; init; }
     /// <summary>When set, clicking the entry opens this menu (null text = separator). Takes precedence over Copy.</summary>
     public List<PopupAction>? Actions { get; init; }
+    /// <summary>Small outlined label after the name, e.g. "Internet" or "VPN".</summary>
+    public string? Tag { get; init; }
+    /// <summary>Folded into the "N more" line until expanded (disconnected or virtual adapters).</summary>
+    public bool Folded { get; init; }
+    /// <summary>Amber line under the entry, e.g. packet errors.</summary>
+    public string? Warning { get; init; }
     /// <summary>Optional third line, e.g. Wi-Fi network and signal.</summary>
     public string? Line2 { get; init; }
     /// <summary>Signal bars (0-4) drawn before <see cref="Line2"/>; -1 = none.</summary>
@@ -77,6 +85,21 @@ public sealed class PopupForm : Form
     readonly System.Windows.Forms.Timer _actTimer = new() { Interval = 250 };
     Dictionary<string, long> _lastBytes = new();
     readonly HashSet<int> _blinkOn = new();
+    // live speeds
+    Dictionary<string, (long Rx, long Tx)> _rateBase = new();
+    DateTime _rateAt;
+    readonly Dictionary<string, string> _rates = new(StringComparer.OrdinalIgnoreCase);
+    // folded adapters, IP click targets, pin
+    bool _showFolded;
+    Rectangle _moreRect;
+    bool _hoverMore;
+    readonly Dictionary<int, Rectangle> _ipRects = new();
+    int _hoverIp = -1;
+    Rectangle _pinRect;
+    bool _hoverPin;
+    /// <summary>Pinned panels ignore clicks outside them. Remembered for the session.</summary>
+    public static bool Pinned;
+    internal static Dictionary<string, string>? TestRates; // preview only
     bool _netBusy, _actBusy;
     ContextMenuStrip? _toolsMenu;
     public static Action<string, string>? ToolRequested; // (tool, ip)
@@ -156,7 +179,7 @@ public sealed class PopupForm : Form
             {
                 bool down = (MouseButtons & (MouseButtons.Left | MouseButtons.Right)) != 0;
                 bool inMenu = _toolsMenu is { Visible: true } m && m.Bounds.Contains(Cursor.Position);
-                if (down && !wasDown && !inMenu && !Bounds.Contains(Cursor.Position)) BeginClose();
+                if (down && !wasDown && !inMenu && !Pinned && !Bounds.Contains(Cursor.Position)) BeginClose();
                 wasDown = down;
             };
         }
@@ -249,9 +272,26 @@ public sealed class PopupForm : Form
         _actBusy = true;
         try
         {
-            var now = await Task.Run(NetCheck.ByteCounters);
+            var split = await Task.Run(NetCheck.ByteCountersSplit);
             if (IsDisposed) return;
+            var now = split.ToDictionary(kv => kv.Key, kv => kv.Value.Rx + kv.Value.Tx, StringComparer.OrdinalIgnoreCase);
             bool changed = false;
+            var t = DateTime.UtcNow;
+            double secs = (t - _rateAt).TotalSeconds;
+            if (_rateBase.Count == 0) { _rateBase = split; _rateAt = t; }
+            else if (secs >= 1)
+            {
+                foreach (var (n, (rx, tx)) in split)
+                {
+                    if (!_rateBase.TryGetValue(n, out var b0)) continue;
+                    double down = Math.Max(0, rx - b0.Rx) / secs, upr = Math.Max(0, tx - b0.Tx) / secs;
+                    var text = _c.Compact
+                        ? $"↓{NetDetails.FormatRateShort(down)}  ↑{NetDetails.FormatRateShort(upr)}"
+                        : $"↓ {NetDetails.FormatRate(down)}   ↑ {NetDetails.FormatRate(upr)}";
+                    if (!_rates.TryGetValue(n, out var old) || old != text) { _rates[n] = text; changed = true; }
+                }
+                _rateBase = split; _rateAt = t;
+            }
             for (int i = 0; i < _c.Entries.Count; i++)
             {
                 var name = _c.Entries[i].Name;
@@ -323,7 +363,7 @@ public sealed class PopupForm : Form
 
     void LayoutContent()
     {
-        int width = Px(380);
+        int width = Px(400);
         using var g = CreateGraphics();
         int y = Pad;
         y += Px(22); // title row
@@ -345,15 +385,27 @@ public sealed class PopupForm : Form
             y += nh;
         }
         _entryRects.Clear();
+        _moreRect = Rectangle.Empty;
         if (_c.Entries.Count > 0)
         {
             y += Px(10);
-            int eh = TextRenderer.MeasureText("Ag", _fHeading).Height + TextRenderer.MeasureText("Ag", _fSub).Height + Px(10);
+            int hh = TextRenderer.MeasureText("Ag", _fHeading).Height;
             int sh = TextRenderer.MeasureText("Ag", _fSub).Height;
+            int rowW = width - Pad * 2 + Px(16);
+            bool moreDone = false;
             foreach (var en in _c.Entries)
             {
-                _entryRects.Add(new Rectangle(Pad - Px(8), y, width - Pad * 2 + Px(16), eh + (en.Line2 != null ? sh : 0)));
-                if (en.Line2 != null) y += sh;
+                if (en.Folded && !moreDone)
+                {
+                    moreDone = true;
+                    _moreRect = new Rectangle(Pad - Px(8), y, rowW, sh + Px(12));
+                    y += _moreRect.Height + Px(2);
+                }
+                if (en.Folded && !_showFolded) { _entryRects.Add(Rectangle.Empty); continue; }
+                int eh = _c.Compact ? hh + Px(8)
+                    : hh + sh + Px(10) + (en.Line2 != null ? sh : 0) + (en.Warning != null ? sh : 0);
+                if (_c.Compact && en.Warning != null) eh += sh;
+                _entryRects.Add(new Rectangle(Pad - Px(8), y, rowW, eh));
                 y += eh + Px(2);
             }
         }
@@ -379,6 +431,7 @@ public sealed class PopupForm : Form
         y += btnH + Pad;
         Size = new Size(width, y);
         _closeRect = new Rectangle(width - Pad - Px(20) + Px(4), Pad - Px(3), Px(24), Px(24));
+        _pinRect = _c.CloseOnOutsideClick ? new Rectangle(_closeRect.X - Px(28), _closeRect.Y, Px(24), Px(24)) : Rectangle.Empty;
     }
 
     int LabelWidth() => Px(92);
@@ -439,7 +492,8 @@ public sealed class PopupForm : Form
         TextRenderer.DrawText(g, _c.Title, _fTitle, titleRect, _t.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         var time = DateTime.Now.ToString("HH:mm");
         var tw = TextRenderer.MeasureText(time, _fSub).Width;
-        TextRenderer.DrawText(g, time, _fSub, new Rectangle(_closeRect.Left - tw - Px(6), y, tw, Px(20)), _t.SubText, TextFormatFlags.VerticalCenter);
+        TextRenderer.DrawText(g, time, _fSub, new Rectangle((_pinRect.IsEmpty ? _closeRect.Left : _pinRect.Left) - tw - Px(6), y, tw, Px(20)), _t.SubText, TextFormatFlags.VerticalCenter);
+        if (!_pinRect.IsEmpty) DrawPin(g, _pinRect);
         if (_closeHover)
             using (var hb = new SolidBrush(_t.SurfaceHover)) using (var hp = Theme.RoundRect(_closeRect, 4)) g.FillPath(hb, hp);
         using (var cp = new Pen(_t.SubText, Math.Max(1.2f, S * 1.2f)))
@@ -545,84 +599,165 @@ public sealed class PopupForm : Form
                 }
             }
         }
+        PaintEntries(g);
+    }
+
+    void PaintEntries(Graphics g)
+    {
+        var flags = TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
+        var np = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
+        int lh = TextRenderer.MeasureText("Ag", _fHeading).Height, sh = TextRenderer.MeasureText("Ag", _fSub).Height;
+        if (!_moreRect.IsEmpty)
+        {
+            var folded = _c.Entries.Where(en => en.Folded).ToList();
+            if (_hoverMore)
+                using (var hb = new SolidBrush(_t.SurfaceHover)) using (var hp = Theme.RoundRect(_moreRect, 5)) g.FillPath(hb, hp);
+            int md = Px(8);
+            using (var db = new SolidBrush(_t.Border)) g.FillEllipse(db, _moreRect.X + Px(8), _moreRect.Y + (_moreRect.Height - md) / 2, md, md);
+            var link = _showFolded ? "Hide" : "Show";
+            int lw = TextRenderer.MeasureText(g, link, _fSub, Size.Empty, np).Width;
+            var mt = $"{folded.Count} more not connected or virtual: " + string.Join(", ", folded.Select(f => f.Name));
+            int mx = _moreRect.X + Px(24);
+            TextRenderer.DrawText(g, mt, _fSub, new Rectangle(mx, _moreRect.Y, _moreRect.Right - mx - lw - Px(16), _moreRect.Height), _t.SubText, flags | TextFormatFlags.VerticalCenter);
+            TextRenderer.DrawText(g, link, _fSub, new Rectangle(_moreRect.Right - lw - Px(8), _moreRect.Y, lw, _moreRect.Height), _t.Accent, np | TextFormatFlags.VerticalCenter);
+        }
         for (int i = 0; i < _c.Entries.Count && i < _entryRects.Count; i++)
         {
-            var (name, line, copy, up, gw, rest) = _c.Entries[i];
             var r = _entryRects[i];
+            if (r.IsEmpty) { _gwRects.Remove(i); _ipRects.Remove(i); continue; }
             var entry = _c.Entries[i];
+            var (name, line, copy, up, gw, rest) = entry;
             bool clickable = copy != null || entry.Click != null || entry.Actions != null;
-            if (i == _hoverEntry && clickable)
+            if (i == _hoverEntry && clickable && _hoverIp != i && _hoverGw != i)
                 using (var hb = new SolidBrush(_t.SurfaceHover)) using (var hp = Theme.RoundRect(r, 5)) g.FillPath(hb, hp);
-            int lh = TextRenderer.MeasureText("Ag", _fHeading).Height;
             int edot = Px(8);
-            var dotRect = new Rectangle(r.X + Px(8), r.Y + Px(5) + (lh - edot) / 2, edot, edot);
+            var dotRect = new Rectangle(r.X + Px(8), r.Y + Px(_c.Compact ? 4 : 5) + (lh - edot) / 2, edot, edot);
             if (up && _blinkOn.Contains(i))
             {
-                // Lit: brighter dot with a soft glow.
                 var glow = Rectangle.Inflate(dotRect, Px(3), Px(3));
                 using (var gb = new SolidBrush(Color.FromArgb(70, _t.Success))) g.FillEllipse(gb, glow);
                 using (var lb = new SolidBrush(ControlPaint.Light(_t.Success, 0.6f))) g.FillEllipse(lb, dotRect);
             }
             else
                 using (var db = new SolidBrush(up ? _t.Success : _t.Border)) g.FillEllipse(db, dotRect);
-            int tx = r.X + Px(24), etw = r.Width - Px(32);
-            var flags = TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
-            TextRenderer.DrawText(g, name, _fHeading, new Rectangle(tx, r.Y + Px(5), etw - Px(60), lh), _t.Text, flags);
-            if (i == _copiedEntry || (i == _hoverEntry && clickable) || entry.Badge != null)
+
+            int tx = r.X + Px(24), right = r.Right - Px(8);
+            int ty = r.Y + Px(_c.Compact ? 4 : 5);
+            // Right side of the name row: live speed, or the entry's badge/hint (profile list).
+            string? rightText = null; Color rightColor = _t.SubText;
+            if (i == _copiedEntry) { rightText = "Copied"; rightColor = _t.Success; }
+            else if (entry.Badge != null) { rightText = entry.Badge; rightColor = _t.Accent; }
+            else if (i == _hoverEntry && entry.Click != null) rightText = entry.Hint ?? "Switch";
+            else if (up && (_rates.TryGetValue(name, out var rate) || (TestRates?.TryGetValue(name, out rate) ?? false))) rightText = rate;
+            int rw = rightText == null ? 0 : TextRenderer.MeasureText(g, rightText, _fSub, Size.Empty, np).Width;
+            if (rightText != null)
+                TextRenderer.DrawText(g, rightText, _fSub, new Rectangle(right - rw, ty, rw, lh), rightColor, np | TextFormatFlags.VerticalCenter);
+            int tagW = entry.Tag == null ? 0 : TextRenderer.MeasureText(g, entry.Tag, _fSub, Size.Empty, np).Width + Px(10);
+            int nameMax = _c.Compact ? Px(118) : right - rw - Px(10) - tx - (tagW > 0 ? tagW + Px(8) : 0);
+            int nw = Math.Min(nameMax, TextRenderer.MeasureText(g, name, _fHeading, Size.Empty, np).Width);
+            TextRenderer.DrawText(g, name, _fHeading, new Rectangle(tx, ty, nw, lh), _t.Text, flags);
+            int cx = tx + nw + Px(8);
+            if (_c.Compact)
             {
-                var hint = i == _copiedEntry ? "Copied" : entry.Badge ?? entry.Hint ?? (entry.Actions != null ? "Options" : "Copy IP");
-                var hc = i == _copiedEntry ? _t.Success : entry.Badge != null ? _t.Accent : _t.SubText;
-                TextRenderer.DrawText(g, hint, _fSub, new Rectangle(tx, r.Y + Px(5), etw, lh), hc,
-                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                // IP in a column, then the tag.
+                cx = tx + Px(126);
+                if (copy != null || !up)
+                {
+                    var ipText = copy ?? "not connected";
+                    int iw = Math.Min(TextRenderer.MeasureText(g, ipText, _fSub, Size.Empty, np).Width, Math.Max(0, right - rw - Px(10) - cx));
+                    var ir = new Rectangle(cx - Px(3), ty + (lh - sh) / 2 - Px(1), iw + Px(6), sh + Px(2));
+                    if (copy != null) { _ipRects[i] = ir; if (i == _hoverIp) using (var hb = new SolidBrush(_t.Border)) using (var hp = Theme.RoundRect(ir, Px(4))) g.FillPath(hb, hp); }
+                    TextRenderer.DrawText(g, ipText, _fSub, new Rectangle(cx, ty, iw, lh), copy != null ? _t.Text : _t.SubText, flags | TextFormatFlags.VerticalCenter);
+                    cx += iw + Px(8);
+                }
             }
-            var lineRect = new Rectangle(tx, r.Y + Px(5) + lh, etw, r.Height - lh - Px(5));
-            if (gw == null)
+            if (entry.Tag != null && cx + tagW + Px(4) <= right - rw)
             {
-                _gwRects.Remove(i);
-                var full = rest.Length > 0 ? $"{line}  ·  {rest}" : line;
-                TextRenderer.DrawText(g, full, _fSub, lineRect, _t.SubText, flags);
+                int tw2 = tagW;
+                var tr = new Rectangle(cx, ty + (lh - sh) / 2 - Px(1), tw2, sh + Px(2));
+                var tagColor = entry.Tag == "Internet" ? _t.Accent : _t.SubText;
+                using (var tp = new Pen(tagColor)) using (var path = Theme.RoundRect(tr, Px(4))) g.DrawPath(tp, path);
+                TextRenderer.DrawText(g, entry.Tag, _fSub, tr, tagColor, np | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
             }
-            else
+
+            int ly = ty + lh;
+            if (!_c.Compact)
             {
-                // "<ip>  ·  " then the gateway as a link, then the rest.
-                var np = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
-                int cx = lineRect.X;
+                var lineRect = new Rectangle(tx, ly, right - tx, sh);
+                int px = lineRect.X;
                 void Part(string text, Color color, bool last = false)
                 {
-                    int pw = last ? lineRect.Right - cx : TextRenderer.MeasureText(g, text, _fSub, Size.Empty, np).Width;
-                    TextRenderer.DrawText(g, text, _fSub, new Rectangle(cx, lineRect.Y, Math.Max(0, Math.Min(pw, lineRect.Right - cx)), lineRect.Height), color, last ? flags : np);
-                    cx += pw;
+                    int pw = last ? lineRect.Right - px : TextRenderer.MeasureText(g, text, _fSub, Size.Empty, np).Width;
+                    TextRenderer.DrawText(g, text, _fSub, new Rectangle(px, lineRect.Y, Math.Max(0, Math.Min(pw, lineRect.Right - px)), lineRect.Height), color, last ? flags : np);
+                    px += pw;
                 }
-                Part(line + "  ·  ", _t.SubText);
-                var gwText = "gw " + gw;
-                int gwW = TextRenderer.MeasureText(g, gwText, _fSub, Size.Empty, np).Width;
-                int sh = TextRenderer.MeasureText("Ag", _fSub).Height;
-                var gr = new Rectangle(cx - Px(4), lineRect.Y - Px(1), gwW + Px(8), sh + Px(2));
-                _gwRects[i] = gr;
-                if (i == _hoverGw)
-                    using (var hb = new SolidBrush(_t.Border)) using (var hp = Theme.RoundRect(gr, Px(4))) g.FillPath(hb, hp);
-                Part(gwText, _t.Accent);
-                if (rest.Length > 0) Part("  ·  " + rest, _t.SubText, last: true);
-            }
-            if (entry.Line2 != null)
-            {
-                int sh2 = TextRenderer.MeasureText("Ag", _fSub).Height;
-                var l2 = new Rectangle(tx, r.Y + Px(5) + lh + sh2, etw, sh2);
-                int bx = l2.X;
-                if (entry.Signal >= 0)
+                // The address: its own click target (copies), drawn brighter than the rest.
+                if (copy != null)
                 {
-                    int bw = Px(3), gap = Px(1.5f), bh = Px(10), by = l2.Y + (sh2 - bh) / 2;
-                    for (int b = 0; b < 4; b++)
-                    {
-                        int h2 = bh * (b + 1) / 4;
-                        using var bb = new SolidBrush(b < entry.Signal ? _t.Accent : _t.Border);
-                        g.FillRectangle(bb, bx + b * (bw + gap), by + bh - h2, bw, h2);
-                    }
-                    bx += 4 * (bw + gap) + Px(6);
+                    int iw = TextRenderer.MeasureText(g, line, _fSub, Size.Empty, np).Width;
+                    var ir = new Rectangle(px - Px(4), ly - Px(1), iw + Px(8), sh + Px(2));
+                    _ipRects[i] = ir;
+                    if (i == _hoverIp)
+                        using (var hb = new SolidBrush(_t.Border)) using (var hp = Theme.RoundRect(ir, Px(4))) g.FillPath(hb, hp);
+                    Part(line, _t.Text);
                 }
-                TextRenderer.DrawText(g, entry.Line2, _fSub, new Rectangle(bx, l2.Y, l2.Right - bx, sh2), _t.SubText, flags);
+                else { _ipRects.Remove(i); Part(line, _t.SubText, last: gw == null && rest.Length == 0); }
+                if (gw != null)
+                {
+                    Part("  ·  ", _t.SubText);
+                    var gwText = "gw " + gw;
+                    int gwW = TextRenderer.MeasureText(g, gwText, _fSub, Size.Empty, np).Width;
+                    var gr = new Rectangle(px - Px(4), ly - Px(1), gwW + Px(8), sh + Px(2));
+                    _gwRects[i] = gr;
+                    if (i == _hoverGw)
+                        using (var hb = new SolidBrush(_t.Border)) using (var hp = Theme.RoundRect(gr, Px(4))) g.FillPath(hb, hp);
+                    Part(gwText, _t.Accent);
+                }
+                else _gwRects.Remove(i);
+                if (rest.Length > 0) Part("  ·  " + rest, _t.SubText, last: true);
+                ly += sh;
+                if (entry.Line2 != null)
+                {
+                    int bx = tx;
+                    if (entry.Signal >= 0)
+                    {
+                        int bw = Px(3), gap = Px(1.5f), bh = Px(10), by = ly + (sh - bh) / 2;
+                        for (int b = 0; b < 4; b++)
+                        {
+                            int h2 = bh * (b + 1) / 4;
+                            using var bb = new SolidBrush(b < entry.Signal ? _t.Accent : _t.Border);
+                            g.FillRectangle(bb, bx + b * (bw + gap), by + bh - h2, bw, h2);
+                        }
+                        bx += 4 * (bw + gap) + Px(6);
+                    }
+                    TextRenderer.DrawText(g, entry.Line2, _fSub, new Rectangle(bx, ly, right - bx, sh), _t.SubText, flags);
+                    ly += sh;
+                }
             }
+            if (entry.Warning != null)
+                TextRenderer.DrawText(g, entry.Warning, _fSub, new Rectangle(tx, ly, right - tx, sh), Color.FromArgb(0xE0, 0x9B, 0x1A), flags);
         }
+    }
+
+    /// <summary>Push-pin icon: outlined when off, filled in the accent colour when pinned.</summary>
+    void DrawPin(Graphics g, Rectangle r)
+    {
+        if (_hoverPin || Pinned)
+            using (var hb = new SolidBrush(_hoverPin ? _t.SurfaceHover : Color.Transparent)) using (var hp = Theme.RoundRect(r, 4)) g.FillPath(hb, hp);
+        var color = Pinned ? _t.Accent : _t.SubText;
+        var state = g.Save();
+        g.TranslateTransform(r.X + r.Width / 2f, r.Y + r.Height / 2f);
+        g.RotateTransform(45);
+        float u = S;
+        using var pen = new Pen(color, Math.Max(1.2f, 1.3f * u)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var fill = new SolidBrush(color);
+        // head, collar, needle (drawn upright, rotated 45 degrees)
+        var head = new RectangleF(-3.2f * u, -7f * u, 6.4f * u, 6f * u);
+        var collar = new RectangleF(-5f * u, -1.5f * u, 10f * u, 2f * u);
+        if (Pinned) { g.FillRectangle(fill, head); g.FillRectangle(fill, collar); }
+        else { g.DrawRectangle(pen, head.X, head.Y, head.Width, head.Height); g.DrawRectangle(pen, collar.X, collar.Y, collar.Width, collar.Height); }
+        g.DrawLine(pen, 0, 0.5f * u, 0, 7f * u);
+        g.Restore(state);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -632,11 +767,21 @@ public sealed class PopupForm : Form
         int he = _entryRects.FindIndex(r => r.Contains(e.Location));
         int hg = GatewayAt(e.Location);
         bool hp = _pub != null && _pubRect.Contains(e.Location);
-        if (he != _hoverEntry || hg != _hoverGw || hp != _hoverPub) { _hoverEntry = he; _hoverGw = hg; _hoverPub = hp; Invalidate(); }
-        Cursor = h || hg >= 0 || hp || (he >= 0 && (_c.Entries[he].Copy != null || _c.Entries[he].Click != null || _c.Entries[he].Actions != null)) ? Cursors.Hand : Cursors.Default;
+        int hi = IpAt(e.Location);
+        bool hm = _moreRect.Contains(e.Location);
+        bool hpin = _pinRect.Contains(e.Location);
+        if (he != _hoverEntry || hg != _hoverGw || hp != _hoverPub || hi != _hoverIp || hm != _hoverMore || hpin != _hoverPin)
+        { _hoverEntry = he; _hoverGw = hg; _hoverPub = hp; _hoverIp = hi; _hoverMore = hm; _hoverPin = hpin; Invalidate(); }
+        Cursor = h || hg >= 0 || hp || hi >= 0 || hm || hpin || (he >= 0 && (_c.Entries[he].Copy != null || _c.Entries[he].Click != null || _c.Entries[he].Actions != null)) ? Cursors.Hand : Cursors.Default;
     }
 
-    protected override void OnMouseLeave(EventArgs e) { _closeHover = false; _hoverEntry = -1; _hoverGw = -1; Invalidate(); }
+    protected override void OnMouseLeave(EventArgs e) { _closeHover = false; _hoverEntry = -1; _hoverGw = -1; _hoverIp = -1; _hoverMore = false; _hoverPin = false; Invalidate(); }
+
+    int IpAt(Point p)
+    {
+        foreach (var (i, r) in _ipRects) if (!_entryRects[i].IsEmpty && r.Contains(p)) return i;
+        return -1;
+    }
 
     int GatewayAt(Point p)
     {
@@ -714,6 +859,21 @@ public sealed class PopupForm : Form
     protected override void OnMouseClick(MouseEventArgs e)
     {
         if (_closeRect.Contains(e.Location)) { BeginClose(); return; }
+        if (_pinRect.Contains(e.Location)) { Pinned = !Pinned; Invalidate(_pinRect); return; }
+        if (_moreRect.Contains(e.Location))
+        {
+            _showFolded = !_showFolded;
+            LayoutContent();
+            Restack();
+            Invalidate();
+            return;
+        }
+        int ipHit = IpAt(e.Location);
+        if (ipHit >= 0 && _c.Entries[ipHit].Copy is { } ipc)
+        {
+            try { Clipboard.SetText(ipc); _copiedEntry = ipHit; Invalidate(); } catch { }
+            return;
+        }
         int g = GatewayAt(e.Location);
         if (g >= 0) { if (!ToggleOff("gw:" + g)) ShowGatewayTools(g); return; }
         if (_pub != null && _pubRect.Contains(e.Location))

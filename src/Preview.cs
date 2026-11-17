@@ -35,18 +35,24 @@ static class Preview
                 Application.Run(host);
                 break;
             case "overview":
+            case "compact":
                 var fake = new List<AdapterInfo>
                 {
-                    new("Wi-Fi", "MediaTek Wi-Fi 6 MT7921", true, true, new List<(string, string)> { ("192.168.1.73", "255.255.255.0") }, new List<string> { "192.168.1.1" }, new List<string>()),
-                    new("ZeroTier One [ce3bd3f908edbf0a]", "ZeroTier Virtual Port", true, false, new List<(string, string)> { ("172.30.173.86", "255.255.0.0") }, new List<string>(), new List<string>()),
+                    new("Wi-Fi", "MediaTek Wi-Fi 6 MT7921", true, true, new List<(string, string)> { ("192.168.100.55", "255.255.255.0") }, new List<string> { "192.168.100.1" }, new List<string> { "192.168.100.1" }) { Index = 12, IsWireless = true, SpeedBps = 1_200_000_000 },
+                    new("Ethernet", "Intel(R) Ethernet Connection I219-V", true, false, new List<(string, string)> { ("10.0.0.2", "255.255.255.0") }, new List<string>(), new List<string> { "1.1.1.1", "8.8.8.8" }) { Index = 7, SpeedBps = 1_000_000_000 },
+                    new("ZeroTier One [ce3bd3f908824ea0]", "ZeroTier Virtual Port", true, false, new List<(string, string)> { ("172.30.37.86", "255.255.0.0") }, new List<string>(), new List<string>()) { Index = 20, SpeedBps = 100_000_000 },
                     new("vEthernet (Default Switch)", "Hyper-V Virtual Ethernet Adapter", true, false, new List<(string, string)> { ("172.20.240.1", "255.255.240.0") }, new List<string>(), new List<string>()),
                     new("Ethernet 5", "Cisco AnyConnect", false, true, new List<(string, string)>(), new List<string>(), new List<string>()),
+                    new("Bluetooth Network Connection", "Bluetooth Device (Personal Area Network)", false, true, new List<(string, string)>(), new List<string>(), new List<string>()),
                 };
-                var oh = new Form { ShowInTaskbar = false, Opacity = 0, Size = new Size(1, 1) };
                 var wifiFake = new WifiInfo("Softech-5G", "9c:5c:8e:04:b1:30", 78, 44, "Wi-Fi 6 (802.11ax)", "WPA3-Personal", 1_200_000, 960_000);
-                fake[0] = fake[0] with { IsWireless = true, SpeedBps = 1_200_000_000 };
+                NetCheck.TestErrors = n => n == "Ethernet" ? 1284 : 0;
+                PopupForm.TestRates = what == "compact"
+                    ? new() { ["Wi-Fi"] = "↓25M  ↑1.3M", ["Ethernet"] = "↓210k  ↑96k", ["ZeroTier One [ce3bd3f908824ea0]"] = "↓3k  ↑1k" }
+                    : new() { ["Wi-Fi"] = "↓ 24.6 Mbps   ↑ 1.3 Mbps", ["Ethernet"] = "↓ 210 kbps   ↑ 96 kbps", ["ZeroTier One [ce3bd3f908824ea0]"] = "↓ 3 kbps   ↑ 1 kbps" };
+                var oh = new Form { ShowInTaskbar = false, Opacity = 0, Size = new Size(1, 1) };
                 oh.Shown += (_, _) => PopupForm.Show(PopupBuilder.Overview(fake, cfg.Profiles, _ => new List<PopupAction> { new("Set static IP…"), PopupAction.Separator },
-                    x => x.IsWireless ? wifiFake : null, new() { ("Scan LAN", () => { }), ("Monitor…", () => { }) }, publicIp: true), 600);
+                    x => x.IsWireless ? wifiFake : null, new() { ("Scan LAN", () => { }), ("Monitor…", () => { }) }, publicIp: true, compact: what == "compact", internetIndex: 12), 600);
                 Application.Run(oh);
                 break;
             case "details":

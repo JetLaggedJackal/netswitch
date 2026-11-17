@@ -61,7 +61,8 @@ public sealed class TrayApp : ApplicationContext
 
         // Internet status on the tray icon, refreshed every 30 s and after network changes.
         _statusTimer = new System.Windows.Forms.Timer { Interval = 30_000 };
-        _statusTimer.Tick += async (_, _) => { await RefreshTrayStatusAsync(); await CheckAlertsAsync(); };
+        _statusTimer.Tick += async (_, _) => { NetCheck.SampleErrors(); await RefreshTrayStatusAsync(); await CheckAlertsAsync(); };
+        NetCheck.SampleErrors();
         if (previewConfig == null) { _statusTimer.Start(); _ = RefreshTrayStatusAsync(); }
 
         // Auto-switch rules: check once shortly after start (e.g. signed in at the office), then on every network change.
@@ -168,8 +169,10 @@ public sealed class TrayApp : ApplicationContext
     void ToggleOverview() => TogglePanel("overview", () =>
     {
         var visible = NetInfo.Ordered(NetInfo.Snapshot().Values).Where(a => !_cfg.IsHidden(a.Name));
+        NetCheck.SampleErrors();
         return PopupBuilder.Overview(visible, _cfg.Profiles, AdapterActions, a => NetDetails.Wifi(a.Id),
-            new() { ("Scan LAN", () => ScanLan(null)), ("Monitor…", () => OpenMonitor(null)) }, _cfg.PublicIp);
+            new() { ("Scan LAN", () => ScanLan(null)), ("Monitor…", () => OpenMonitor(null)) }, _cfg.PublicIp,
+            _cfg.CompactOverview, NetDetails.InternetIndex());
     });
 
     void BuildMenu()
@@ -340,6 +343,16 @@ public sealed class TrayApp : ApplicationContext
         _monitor.Activate();
     }
 
+    /// <summary>"192.168.1.0/24" for the adapter's first address, if it's a sensible size to scan.</summary>
+    static string? Cidr(AdapterInfo? a)
+    {
+        if (a == null || a.Addresses.Count == 0 || NetDetails.Range(a) == null) return null;
+        var (ip, mask) = a.Addresses[0];
+        var b = System.Net.IPAddress.Parse(ip).GetAddressBytes();
+        var m = System.Net.IPAddress.Parse(mask).GetAddressBytes();
+        return string.Join(".", b.Zip(m, (x, y) => x & y)) + "/" + NetInfo.PrefixLength(mask);
+    }
+
     string ScannerLabel()
     {
         var path = ScannerPath();
@@ -368,10 +381,20 @@ public sealed class TrayApp : ApplicationContext
         }
         try
         {
+            if (Path.GetFileName(path).Equals("nmap.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                // Plain nmap: a ping sweep of the subnet in a console window.
+                if (Cidr(a) is not { } cidr) { Popup(PopupBuilder.Info("Nothing to scan", "The adapter has no IPv4 subnet to scan.")); return; }
+                Process.Start(new ProcessStartInfo("cmd.exe", $"/k title nmap -sn {cidr} & \"{path}\" -sn {cidr}") { UseShellExecute = true });
+                return;
+            }
             var psi = new ProcessStartInfo(path) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(path)! };
             // Angry IP Scanner takes the range on its command line; the others remember or detect the subnet themselves.
             if (NetDetails.Range(a) is { } r && Path.GetFileName(path).Equals("ipscan.exe", StringComparison.OrdinalIgnoreCase))
             { psi.ArgumentList.Add("-f:range"); psi.ArgumentList.Add(r.First); psi.ArgumentList.Add(r.Last); }
+            // Zenmap: start a ping sweep of the subnet straight away.
+            else if (Path.GetFileName(path).Equals("zenmap.exe", StringComparison.OrdinalIgnoreCase) && Cidr(a) is { } zc)
+            { psi.ArgumentList.Add("--nmap"); psi.ArgumentList.Add("nmap"); psi.ArgumentList.Add("-sn"); psi.ArgumentList.Add(zc); }
             Process.Start(psi);
         }
         catch (Exception ex) { Popup(PopupBuilder.Error("Could not open the LAN scanner", $"{path}\n{ex.Message}")); }
