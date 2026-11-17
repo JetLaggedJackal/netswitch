@@ -8,6 +8,7 @@ public sealed class QuickIpForm : Form
     readonly ModernTextBox _ip, _mask, _gw, _dns1, _dns2;
     readonly Label _error;
     public Profile? Result { get; private set; }
+    TableLayoutPanel _stack = null!;
 
     public QuickIpForm(AdapterInfo a)
     {
@@ -84,6 +85,7 @@ public sealed class QuickIpForm : Form
         stack.Controls.Add(_error);
         stack.Controls.Add(buttons);
         Controls.Add(stack);
+        _stack = stack;
         ResumeLayout(true);
         Shown += (_, _) => { Activate(); _ip.Focus(); _ip.SelectAll(); };
     }
@@ -118,7 +120,7 @@ public sealed class QuickIpForm : Form
             Dns = dns,
             DnsAuto = false,
         };
-        if (IpUtil.Validate(p) is { } problem) { _error.Text = problem; return; }
+        if (IpUtil.Validate(p) is { } problem) { _error.Text = problem; FitHeight(); return; }
         Result = p;
         DialogResult = DialogResult.OK;
         Close();
@@ -129,4 +131,14 @@ public sealed class QuickIpForm : Form
         base.OnHandleCreated(e);
         _t.ApplyWindowChrome(this);
     }
+
+    /// <summary>Grow the window to fit its content at any scaling, so the buttons are never cut off.</summary>
+    void FitHeight()
+    {
+        var need = _stack.GetPreferredSize(new Size(ClientSize.Width - Padding.Horizontal, 0)).Height + Padding.Vertical;
+        if (need > ClientSize.Height) ClientSize = new Size(ClientSize.Width, need);
+    }
+
+    protected override void OnLoad(EventArgs e) { base.OnLoad(e); FitHeight(); CenterToScreen(); }
+    protected override void OnDpiChanged(DpiChangedEventArgs e) { base.OnDpiChanged(e); FitHeight(); }
 }
