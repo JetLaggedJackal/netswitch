@@ -59,7 +59,12 @@ public static class NetCheck
         {
             var sw = Stopwatch.StartNew();
             var lookup = Dns.GetHostAddressesAsync(DnsName);
-            if (await Task.WhenAny(lookup, Task.Delay(3000)) != lookup) return null;
+            if (await Task.WhenAny(lookup, Task.Delay(3000)) != lookup)
+            {
+                // Observe the abandoned lookup so a late "No such host" doesn't land in error.log.
+                _ = lookup.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+                return null;
+            }
             var addrs = await lookup;
             return addrs.Length > 0 ? sw.ElapsedMilliseconds : null;
         }
