@@ -1,0 +1,54 @@
+namespace NetSwitch;
+
+/// <summary>Shows a UI piece on its own, for screenshots and design checks: NetSwitch --preview editor|notify|popup|menu</summary>
+static class Preview
+{
+    public static int Run(string what)
+    {
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        var cfg = new AppConfig();
+        var snap = NetInfo.Snapshot();
+        var a = snap.Values.FirstOrDefault(x => x.IsUp && x.Addresses.Count > 0) ?? snap.Values.FirstOrDefault();
+        var name = a?.Name ?? "Ethernet";
+        cfg.Profiles.Add(new Profile { Name = "Office (fixed IP)", Adapter = name, Dhcp = false, Ip = "192.168.10.50", Mask = "255.255.255.0", Gateway = "192.168.10.1", Dns = new() { "192.168.10.1", "1.1.1.1" } });
+        cfg.Profiles.Add(new Profile { Name = "Home (DHCP)", Adapter = name, Dhcp = true });
+        cfg.Profiles.Add(new Profile { Name = "Lab bench", Adapter = name, Dhcp = false, Ip = "10.0.0.2/24" });
+        cfg.WatchAdapters.Add(name);
+        using var s = typeof(Preview).Assembly.GetManifestResourceStream("NetSwitch.app.ico");
+        var icon = s != null ? new Icon(s) : SystemIcons.Application;
+
+        switch (what)
+        {
+            case "popup":
+            case "applied":
+            case "error":
+                var after = a ?? new AdapterInfo(name, "Intel(R) Ethernet Connection I219-V", true, true,
+                    new List<(string, string)> { ("192.168.1.73", "255.255.255.0") }, new List<string> { "192.168.1.1" }, new List<string> { "192.168.1.1", "1.1.1.1" });
+                var before = after with { Addresses = new List<(string, string)> { ("10.0.0.5", "255.255.255.0") } };
+                var c = what == "popup" ? PopupBuilder.Change(name, before, after, cfg.Profiles, true)
+                    : what == "applied" ? PopupBuilder.Applied(cfg.Profiles[0], after, true)
+                    : PopupBuilder.Error("Could not switch profile", "netsh failed: The filename, directory name, or volume label syntax is incorrect.");
+                var host = new Form { ShowInTaskbar = false, Opacity = 0, Size = new Size(1, 1) };
+                host.Shown += (_, _) => PopupForm.Show(c, 600);
+                Application.Run(host);
+                break;
+            case "menu":
+                var app = new TrayApp(cfg);
+                var menu = (ContextMenuStrip)typeof(TrayApp).GetField("_menu", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(app)!;
+                var t = new System.Windows.Forms.Timer { Interval = 1500 };
+                t.Tick += (_, _) => { t.Stop(); menu.Show(new Point(900, 300)); };
+                t.Start();
+                Application.Run(app);
+                break;
+            default:
+                var f = new ProfilesForm(cfg, icon);
+                if (what == "notify") f.Shown += (_, _) => f.GetType().GetMethod("ShowNotifications", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(f, null);
+                f.TestPopup = p => PopupForm.Show(p, 10);
+                Application.Run(f);
+                break;
+        }
+        return 0;
+    }
+}

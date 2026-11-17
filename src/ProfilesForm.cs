@@ -1,0 +1,604 @@
+using System.Drawing.Drawing2D;
+
+namespace NetSwitch;
+
+/// <summary>Settings window: profiles on the left, details on the right, notifications page.</summary>
+public sealed class ProfilesForm : Form
+{
+    public event Action<AppConfig>? Saved;
+    public Action<PopupContent>? TestPopup;
+
+    readonly Theme _t = Theme.Current;
+    readonly AppConfig _cfg;
+    readonly List<Profile> _profiles;
+    readonly Dictionary<string, AdapterInfo> _snap;
+
+    // sidebar
+    readonly ListBox _list = new();
+    readonly NavButton _navNotify;
+    // pages
+    readonly Panel _profilePage = new(), _notifyPage = new(), _emptyPage = new();
+    // profile fields
+    readonly Label _title, _status;
+    readonly ModernTextBox _name, _ip, _mask, _gw, _dns1, _dns2;
+    readonly ModernCombo _adapter;
+    readonly SegmentedControl _ipMode, _dnsMode;
+    readonly Label _ipHint, _dnsHint;
+    readonly TableLayoutPanel _ipGrid, _dnsGrid;
+    readonly ModernButton _fill;
+    // notifications
+    readonly ToggleSwitch _notifyOn, _sticky;
+    readonly List<AdapterRow> _watchRows = new();
+    // footer
+    readonly Label _footerMsg;
+
+    Profile? _current;
+    bool _loading;
+
+    public ProfilesForm(AppConfig cfg, Icon icon)
+    {
+        _cfg = cfg;
+        _profiles = cfg.Profiles.Select(p => p.Clone()).ToList();
+        _snap = NetInfo.Snapshot();
+
+        SuspendLayout();
+        AutoScaleDimensions = new SizeF(96F, 96F);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        Text = "NetSwitch";
+        Icon = icon;
+        Font = Theme.UiFont();
+        BackColor = _t.Window;
+        ForeColor = _t.Text;
+        StartPosition = FormStartPosition.CenterScreen;
+        ClientSize = new Size(920, 740);
+        MinimumSize = new Size(780, 600);
+
+        // ---------- footer ----------
+        var footer = new Panel { Dock = DockStyle.Bottom, Height = 64, BackColor = _t.Window, Padding = new Padding(24, 14, 24, 14) };
+        footer.Paint += (_, e) => { using var p = new Pen(_t.Border); e.Graphics.DrawLine(p, 0, 0, footer.Width, 0); };
+        var save = new ModernButton(_t, "Save", primary: true) { Width = 110, Margin = new Padding(8, 0, 0, 0) };
+        var cancel = new ModernButton(_t, "Cancel") { Width = 110, Margin = new Padding(8, 0, 0, 0) };
+        save.Click += (_, _) => SaveAndClose();
+        cancel.Click += (_, _) => Close();
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Right, FlowDirection = FlowDirection.RightToLeft, AutoSize = true, WrapContents = false, BackColor = _t.Window };
+        buttons.Controls.Add(save);
+        buttons.Controls.Add(cancel);
+        _footerMsg = Ui.Label(_t, "", 9f, sub: true);
+        _footerMsg.AutoSize = false; _footerMsg.Dock = DockStyle.Fill; _footerMsg.TextAlign = ContentAlignment.MiddleLeft;
+        footer.Controls.Add(_footerMsg);
+        footer.Controls.Add(buttons);
+        AcceptButton = save; CancelButton = cancel;
+
+        // ---------- sidebar ----------
+        var sidebar = new Panel { Dock = DockStyle.Left, Width = 270, BackColor = _t.Sidebar, Padding = new Padding(12, 18, 12, 12) };
+        var brand = new Panel { Dock = DockStyle.Top, Height = 58, BackColor = _t.Sidebar };
+        var logo = new PictureBox { Image = new Icon(icon, 32, 32).ToBitmap(), SizeMode = PictureBoxSizeMode.Zoom, Size = new Size(30, 30), Location = new Point(6, 4), BackColor = _t.Sidebar };
+        var appName = Ui.Label(_t, "NetSwitch", 13f, FontStyle.Bold); appName.Location = new Point(44, 0);
+        var appSub = Ui.Label(_t, "Network profiles", 9f, sub: true); appSub.Location = new Point(46, 26);
+        brand.Controls.AddRange(new Control[] { logo, appName, appSub });
+
+        var profilesCaption = Ui.Label(_t, "PROFILES", 8.25f, FontStyle.Bold, sub: true);
+        profilesCaption.AutoSize = false; profilesCaption.Dock = DockStyle.Top; profilesCaption.Height = 26;
+        profilesCaption.Padding = new Padding(8, 6, 0, 0);
+
+        _list.Dock = DockStyle.Fill;
+        _list.BorderStyle = BorderStyle.None;
+        _list.BackColor = _t.Sidebar;
+        _list.DrawMode = DrawMode.OwnerDrawFixed;
+        _list.IntegralHeight = false;
+        _list.ItemHeight = 58;
+        _list.DrawItem += DrawProfileItem;
+        _list.SelectedIndexChanged += (_, _) => { if (!_loading) ShowProfile(_list.SelectedItem as Profile); };
+        _list.MouseUp += (_, _) => { if (_list.SelectedItem is Profile p) ShowProfile(p); };
+
+        var add = new ModernButton(_t, "+  New profile") { Ghost = true, Dock = DockStyle.Bottom, Height = 36 };
+        add.Click += (_, _) => AddProfile();
+
+        _navNotify = new NavButton(_t, "", "Notifications") { Dock = DockStyle.Bottom, Height = 40 };
+        _navNotify.Click += (_, _) => ShowNotifications();
+        var sep = new Panel { Dock = DockStyle.Bottom, Height = 13, BackColor = _t.Sidebar };
+        sep.Paint += (_, e) => { using var p = new Pen(_t.Border); e.Graphics.DrawLine(p, 6, 6, sep.Width - 6, 6); };
+
+        sidebar.Controls.Add(_list);
+        sidebar.Controls.Add(profilesCaption);
+        sidebar.Controls.Add(brand);
+        sidebar.Controls.Add(add);
+        sidebar.Controls.Add(sep);
+        sidebar.Controls.Add(_navNotify);
+        // order bottom items: add above separator above nav
+        sidebar.Controls.SetChildIndex(_navNotify, sidebar.Controls.Count - 1);
+        sidebar.Controls.SetChildIndex(sep, sidebar.Controls.Count - 2);
+        sidebar.Controls.SetChildIndex(add, sidebar.Controls.Count - 3);
+        _list.BringToFront();
+
+        // ---------- profile page ----------
+        _title = Ui.Label(_t, "", 17f, FontStyle.Bold);
+        _status = Ui.Label(_t, "", 9.25f, sub: true);
+        var dup = new ModernButton(_t, "Duplicate") { Ghost = true, Width = 96 };
+        var del = new ModernButton(_t, "Delete") { Ghost = true, Width = 86 };
+        dup.Click += (_, _) => DuplicateProfile();
+        del.Click += (_, _) => RemoveProfile();
+
+        var header = new TableLayoutPanel { ColumnCount = 3, RowCount = 2, Dock = DockStyle.Top, AutoSize = true, Margin = new Padding(0, 0, 0, 14), BackColor = _t.Window };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.Controls.Add(_title, 0, 0);
+        header.Controls.Add(dup, 1, 0);
+        header.Controls.Add(del, 2, 0);
+        header.Controls.Add(_status, 0, 1);
+        header.SetColumnSpan(_status, 3);
+        _title.Margin = new Padding(0, 0, 0, 2);
+
+        _name = new ModernTextBox(_t);
+        _adapter = new ModernCombo(_t) { Describe = o => (o.ToString()!, _snap.TryGetValue(o.ToString()!, out var a) ? a.AddressText : "not found") };
+        var general = CardWith("General", Grid(2, Ui.Field(_t, "Profile name", _name), Ui.Field(_t, "Network adapter", _adapter)));
+
+        _ipMode = new SegmentedControl(_t, "Automatic (DHCP)", "Manual") { Width = 330, Margin = new Padding(0, 0, 0, 10) };
+        _ipHint = Ui.Label(_t, "Your router assigns the IP address, subnet mask and gateway.", 9f, sub: true);
+        _ipHint.Margin = new Padding(1, 0, 0, 8);
+        _ip = new ModernTextBox(_t) { PlaceholderText = "192.168.1.50" };
+        _mask = new ModernTextBox(_t) { PlaceholderText = "255.255.255.0 or 24" };
+        _gw = new ModernTextBox(_t) { PlaceholderText = "Optional" };
+        _fill = new ModernButton(_t, "Fill in from adapter") { Ghost = true, Anchor = AnchorStyles.Left | AnchorStyles.Bottom, Width = 170, Margin = new Padding(0, 0, 0, 10) };
+        _fill.Click += (_, _) => FillFromAdapter();
+        _ipGrid = Grid(2, Ui.Field(_t, "IP address", _ip), Ui.Field(_t, "Subnet mask", _mask), Ui.Field(_t, "Default gateway", _gw), _fill);
+        var ipCard = CardWith("IP settings", _ipMode, _ipHint, _ipGrid);
+
+        _dnsMode = new SegmentedControl(_t, "Automatic", "Manual") { Width = 330, Margin = new Padding(0, 0, 0, 10) };
+        _dnsHint = Ui.Label(_t, "", 9f, sub: true);
+        _dnsHint.Margin = new Padding(1, 0, 0, 8);
+        _dns1 = new ModernTextBox(_t) { PlaceholderText = "e.g. 1.1.1.1" };
+        _dns2 = new ModernTextBox(_t) { PlaceholderText = "Optional" };
+        _dnsGrid = Grid(2, Ui.Field(_t, "Preferred DNS", _dns1), Ui.Field(_t, "Alternate DNS", _dns2));
+        var dnsCard = CardWith("DNS servers", _dnsMode, _dnsHint, _dnsGrid);
+
+        BuildPage(_profilePage, header, general, ipCard, dnsCard);
+
+        _name.TextChanged += (_, _) => Edit(p => p.Name = _name.Text.Trim(), refresh: true);
+        _adapter.SelectedIndexChanged += (_, _) => Edit(p => p.Adapter = _adapter.SelectedItem?.ToString() ?? "", refresh: true);
+        _ipMode.SelectedIndexChanged += (_, _) => { Edit(p => p.Dhcp = _ipMode.SelectedIndex == 0, refresh: true); UpdateVisibility(); };
+        _dnsMode.SelectedIndexChanged += (_, _) => { Edit(p => p.DnsAuto = _dnsMode.SelectedIndex == 0, refresh: true); UpdateVisibility(); };
+        _ip.TextChanged += (_, _) => Edit(p => p.Ip = _ip.Text.Trim(), refresh: true);
+        _mask.TextChanged += (_, _) => Edit(p => p.Mask = _mask.Text.Trim());
+        _gw.TextChanged += (_, _) => Edit(p => p.Gateway = _gw.Text.Trim());
+        _dns1.TextChanged += (_, _) => Edit(SetDns);
+        _dns2.TextChanged += (_, _) => Edit(SetDns);
+
+        // ---------- notifications page ----------
+        var nTitle = Ui.Label(_t, "Notifications", 17f, FontStyle.Bold);
+        var nSub = Ui.Label(_t, "Choose when NetSwitch pops up and what it watches.", 9.25f, sub: true);
+        nSub.Margin = new Padding(0, 2, 0, 14);
+        _notifyOn = new ToggleSwitch(_t, "Pop up when an IP address changes") { Width = 420, Checked = cfg.NotifyOnIpChange, Margin = new Padding(0, 0, 0, 6) };
+        _sticky = new ToggleSwitch(_t, "Keep pop-ups open until I close them") { Width = 420, Checked = cfg.PopupStaysOpen, Margin = new Padding(0, 0, 0, 6) };
+        var test = new ModernButton(_t, "Show a test pop-up") { Width = 170, Margin = new Padding(0, 6, 0, 0) };
+        test.Click += (_, _) => ShowTestPopup();
+        var behaviour = CardWith("Pop-ups", _notifyOn, _sticky, test);
+
+        var rows = new List<Control>();
+        var names = _snap.Keys.Concat(cfg.WatchAdapters).Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(n => _snap.TryGetValue(n, out var a) && a.IsUp).ThenBy(n => n);
+        foreach (var n in names)
+        {
+            _snap.TryGetValue(n, out var a);
+            var row = new AdapterRow(_t, n, a == null ? "Not present right now" : $"{a.Description} · {a.AddressText}", cfg.IsWatched(n))
+            { Dock = DockStyle.Top, Margin = new Padding(0, 0, 0, 2) };
+            _watchRows.Add(row);
+            rows.Add(row);
+        }
+        var watch = CardWith("Watch these adapters", rows.ToArray());
+        BuildPage(_notifyPage, nTitle, nSub, behaviour, watch);
+
+        // ---------- empty state ----------
+        var emptyTitle = Ui.Label(_t, "No profiles yet", 17f, FontStyle.Bold);
+        var emptySub = Ui.Label(_t, "Create one for each way you connect, for example \"Office (fixed IP)\" and \"Home (DHCP)\".", 9.5f, sub: true);
+        emptySub.Margin = new Padding(0, 4, 0, 16);
+        var emptyAdd = new ModernButton(_t, "+  New profile", primary: true) { Width = 150 };
+        emptyAdd.Click += (_, _) => AddProfile();
+        BuildPage(_emptyPage, emptyTitle, emptySub, emptyAdd);
+
+        // ---------- assemble ----------
+        var content = new Panel { Dock = DockStyle.Fill, BackColor = _t.Window };
+        content.Controls.Add(_profilePage);
+        content.Controls.Add(_notifyPage);
+        content.Controls.Add(_emptyPage);
+        Controls.Add(content);
+        Controls.Add(sidebar);
+        Controls.Add(footer);
+        ResumeLayout(true);
+
+        foreach (var p in _profiles) _list.Items.Add(p);
+        if (_list.Items.Count > 0) _list.SelectedIndex = 0; else ShowProfile(null);
+        ActiveControl = _name;
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        _t.ApplyWindowChrome(this);
+        _t.ApplyControlTheme(_list);
+    }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+        _list.ItemHeight = LogicalToDeviceUnits(58);
+    }
+
+    // ---------- building blocks ----------
+
+    Card CardWith(string title, params Control[] children)
+    {
+        var card = new Card(_t) { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(0, 0, 0, 14) };
+        var stack = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true, BackColor = _t.Surface };
+        var h = Ui.Label(_t, title, 10.5f, FontStyle.Bold);
+        h.Margin = new Padding(0, 0, 0, 10);
+        stack.Controls.Add(h);
+        foreach (var c in children)
+        {
+            if (c is TableLayoutPanel or AdapterRow) c.Dock = DockStyle.Top;
+            stack.Controls.Add(c);
+        }
+        stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        card.Controls.Add(stack);
+        return card;
+    }
+
+    TableLayoutPanel Grid(int cols, params Control[] cells)
+    {
+        var g = new TableLayoutPanel { ColumnCount = cols, AutoSize = true, Dock = DockStyle.Top, BackColor = _t.Surface, Margin = new Padding(0) };
+        for (int i = 0; i < cols; i++) g.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / cols));
+        foreach (var c in cells) g.Controls.Add(c);
+        return g;
+    }
+
+    void BuildPage(Panel page, params Control[] blocks)
+    {
+        page.Dock = DockStyle.Fill;
+        page.AutoScroll = true;
+        page.BackColor = _t.Window;
+        page.Padding = new Padding(28, 22, 28, 10);
+        var stack = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true, BackColor = _t.Window };
+        stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        foreach (var b in blocks)
+        {
+            if (b is Card or TableLayoutPanel) b.Dock = DockStyle.Fill;
+            stack.Controls.Add(b);
+        }
+        page.Controls.Add(stack);
+        page.Visible = false;
+    }
+
+    void ShowPage(Panel page)
+    {
+        foreach (var p in new[] { _profilePage, _notifyPage, _emptyPage }) p.Visible = p == page;
+        _navNotify.Selected = page == _notifyPage;
+        _list.Invalidate();
+    }
+
+    // ---------- profile list ----------
+
+    void DrawProfileItem(object? sender, DrawItemEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var bg = new SolidBrush(_t.Sidebar)) g.FillRectangle(bg, e.Bounds);
+        if (e.Index < 0 || e.Index >= _list.Items.Count) return;
+        var p = (Profile)_list.Items[e.Index];
+        bool sel = p == _current && _profilePage.Visible;
+
+        var r = new Rectangle(e.Bounds.X + 2, e.Bounds.Y + 3, e.Bounds.Width - 4, e.Bounds.Height - 6);
+        if (sel)
+        {
+            using var path = Theme.RoundRect(r, 6);
+            using var b = new SolidBrush(_t.Dark ? _t.SurfaceHover : _t.Surface);
+            g.FillPath(b, path);
+            using var bar = new SolidBrush(_t.Accent);
+            int bh = r.Height / 2;
+            using var barPath = Theme.RoundRect(new RectangleF(r.X, r.Y + (r.Height - bh) / 2f, LogicalToDeviceUnits(3), bh), 1.5f);
+            g.FillPath(bar, barPath);
+        }
+
+        _snap.TryGetValue(p.Adapter, out var a);
+        bool active = NetInfo.Matches(p, a);
+        int pad = LogicalToDeviceUnits(14);
+        using var bold = Theme.UiFont(9.75f, FontStyle.Bold);
+        using var small = Theme.UiFont(8.75f);
+        int lineH = TextRenderer.MeasureText("Ag", bold).Height;
+        int top = r.Y + (r.Height - lineH * 2) / 2;
+        int textW = r.Width - pad * 2 - (active ? LogicalToDeviceUnits(54) : 0);
+        TextRenderer.DrawText(g, p.ToString(), bold, new Rectangle(r.X + pad, top, textW, lineH), _t.Text, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        TextRenderer.DrawText(g, p.Summary, small, new Rectangle(r.X + pad, top + lineH, r.Width - pad * 2, lineH), _t.SubText, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+
+        if (active)
+        {
+            var text = "Active";
+            var ts = TextRenderer.MeasureText(text, small);
+            var pill = new Rectangle(r.Right - pad - ts.Width - LogicalToDeviceUnits(6), top, ts.Width + LogicalToDeviceUnits(6), lineH);
+            using var pb = new SolidBrush(Theme.Blend(_t.Success, _t.Sidebar, 0.18f));
+            using var pp = Theme.RoundRect(pill, pill.Height / 2f);
+            g.FillPath(pb, pp);
+            TextRenderer.DrawText(g, text, small, pill, _t.Success, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+    }
+
+    void RefreshListItem(Profile p)
+    {
+        var i = _list.Items.IndexOf(p);
+        if (i < 0) return;
+        _loading = true;
+        _list.Items[i] = p;
+        _loading = false;
+        _list.Invalidate();
+    }
+
+    // ---------- editing ----------
+
+    void ShowProfile(Profile? p)
+    {
+        _current = p;
+        if (p == null)
+        {
+            ShowPage(_profiles.Count == 0 ? _emptyPage : _profilePage);
+            return;
+        }
+        _loading = true;
+        _adapter.Items.Clear();
+        foreach (var n in _snap.Values.OrderByDescending(a => a.IsUp).ThenBy(a => a.Name).Select(a => a.Name)) _adapter.Items.Add(n);
+        if (!string.IsNullOrEmpty(p.Adapter) && !_adapter.Items.Contains(p.Adapter)) _adapter.Items.Add(p.Adapter);
+        _adapter.SelectedItem = p.Adapter;
+
+        _name.Text = p.Name;
+        _ipMode.SelectedIndex = p.Dhcp ? 0 : 1;
+        _dnsMode.SelectedIndex = p.UsesAutoDns ? 0 : 1;
+        _ip.Text = p.Ip;
+        _mask.Text = p.Mask;
+        _gw.Text = p.Gateway;
+        _dns1.Text = p.Dns.ElementAtOrDefault(0) ?? "";
+        _dns2.Text = p.Dns.ElementAtOrDefault(1) ?? "";
+        _loading = false;
+
+        UpdateHeader();
+        UpdateVisibility();
+        ShowPage(_profilePage);
+    }
+
+    void Edit(Action<Profile> change, bool refresh = false)
+    {
+        if (_loading || _current == null) return;
+        change(_current);
+        _footerMsg.Text = "";
+        if (refresh) { RefreshListItem(_current); UpdateHeader(); }
+    }
+
+    void SetDns(Profile p) => p.Dns = new[] { _dns1.Text.Trim(), _dns2.Text.Trim() }.Where(s => s.Length > 0).ToList();
+
+    void UpdateHeader()
+    {
+        if (_current == null) return;
+        _title.Text = string.IsNullOrWhiteSpace(_current.Name) ? "Untitled profile" : _current.Name;
+        if (_snap.TryGetValue(_current.Adapter, out var a))
+        {
+            var state = a.IsUp ? $"connected · {a.AddressText} ({a.ModeText})" : "disconnected";
+            _status.Text = $"{a.Name} is {state}" + (NetInfo.Matches(_current, a) ? " · this profile is active" : "");
+        }
+        else _status.Text = string.IsNullOrEmpty(_current.Adapter) ? "Choose a network adapter" : $"{_current.Adapter} is not present right now";
+    }
+
+    void UpdateVisibility()
+    {
+        bool manualIp = _ipMode.SelectedIndex == 1;
+        _ipGrid.Visible = manualIp;
+        _ipHint.Visible = !manualIp;
+
+        if (manualIp)
+        {
+            // Windows requires manual DNS when the IP is manual.
+            if (_dnsMode.SelectedIndex != 1) { var was = _loading; _loading = true; _dnsMode.SelectedIndex = 1; _loading = was; }
+            _dnsMode.Enabled = false;
+            _dnsHint.Text = "With a manual IP, DNS servers are set by hand too. Leave both empty for none.";
+            _dnsHint.Visible = true;
+            _dnsGrid.Visible = true;
+        }
+        else
+        {
+            _dnsMode.Enabled = true;
+            bool manualDns = _dnsMode.SelectedIndex == 1;
+            _dnsGrid.Visible = manualDns;
+            _dnsHint.Text = "DNS servers also come from your router.";
+            _dnsHint.Visible = !manualDns;
+        }
+    }
+
+    void AddProfile()
+    {
+        var adapter = _current?.Adapter
+            ?? _snap.Values.Where(a => a.IsUp && a.Addresses.Count > 0).OrderByDescending(a => a.Gateways.Count).FirstOrDefault()?.Name ?? "";
+        var p = new Profile { Name = UniqueName("New profile"), Adapter = adapter, Dhcp = false };
+        AddAndSelect(p);
+        _name.Focus();
+        _name.SelectAll();
+    }
+
+    void DuplicateProfile()
+    {
+        if (_current == null) return;
+        var p = _current.Clone();
+        p.Name = UniqueName(_current.Name + " copy");
+        AddAndSelect(p);
+    }
+
+    void AddAndSelect(Profile p)
+    {
+        _profiles.Add(p);
+        _list.Items.Add(p);
+        _list.SelectedItem = p;
+        ShowProfile(p);
+    }
+
+    string UniqueName(string baseName)
+    {
+        var name = baseName;
+        for (int i = 2; _profiles.Any(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase)); i++) name = $"{baseName} {i}";
+        return name;
+    }
+
+    void RemoveProfile()
+    {
+        if (_current == null) return;
+        var i = _profiles.IndexOf(_current);
+        _profiles.Remove(_current);
+        _list.Items.Remove(_current);
+        _current = null;
+        if (_list.Items.Count > 0)
+        {
+            _list.SelectedIndex = Math.Min(i, _list.Items.Count - 1);
+            ShowProfile(_list.SelectedItem as Profile);
+        }
+        else ShowProfile(null);
+    }
+
+    void FillFromAdapter()
+    {
+        if (_current == null || !_snap.TryGetValue(_current.Adapter, out var a) || a.Addresses.Count == 0)
+        {
+            _footerMsg.ForeColor = _t.SubText;
+            _footerMsg.Text = "That adapter has no IPv4 address right now.";
+            return;
+        }
+        var addr = a.Addresses[0];
+        _ip.Text = addr.Ip;
+        _mask.Text = string.IsNullOrEmpty(addr.Mask) ? "255.255.255.0" : addr.Mask;
+        _gw.Text = a.Gateways.FirstOrDefault() ?? "";
+        _dns1.Text = a.Dns.ElementAtOrDefault(0) ?? "";
+        _dns2.Text = a.Dns.ElementAtOrDefault(1) ?? "";
+    }
+
+    void ShowNotifications()
+    {
+        ShowPage(_notifyPage);
+    }
+
+    void ShowTestPopup()
+    {
+        var a = _snap.Values.Where(x => x.IsUp && x.Addresses.Count > 0).OrderByDescending(x => x.Gateways.Count).FirstOrDefault();
+        if (a == null) return;
+        var before = a with { Addresses = new List<(string, string)> { ("192.0.2.10", "255.255.255.0") } };
+        TestPopup?.Invoke(PopupBuilder.Change(a.Name, before, a, _profiles, _sticky.Checked));
+    }
+
+    void SaveAndClose()
+    {
+        foreach (var p in _profiles)
+        {
+            var problem = IpUtil.Validate(p);
+            if (problem != null) { Fail(problem, p); return; }
+        }
+        var dup = _profiles.GroupBy(p => p.Name, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
+        if (dup != null) { Fail($"Two profiles are named \"{dup.Key}\". Names must be unique.", dup.Last()); return; }
+
+        _cfg.Profiles = _profiles.Select(p => p.Clone()).ToList();
+        _cfg.WatchAdapters = _watchRows.Where(r => r.Checked).Select(r => r.AdapterName).ToList();
+        _cfg.NotifyOnIpChange = _notifyOn.Checked;
+        _cfg.PopupStaysOpen = _sticky.Checked;
+        try { _cfg.Save(); }
+        catch (Exception ex) { Fail("Could not save: " + ex.Message, null); return; }
+        Saved?.Invoke(_cfg);
+        Close();
+    }
+
+    void Fail(string message, Profile? p)
+    {
+        if (p != null) { _list.SelectedItem = p; ShowProfile(p); }
+        _footerMsg.ForeColor = _t.Danger;
+        _footerMsg.Text = message;
+    }
+}
+
+/// <summary>Sidebar navigation entry with an icon glyph.</summary>
+public sealed class NavButton : Control
+{
+    readonly Theme _t;
+    readonly string _glyph;
+    bool _hover, _selected;
+    static readonly Font? IconFont = LoadIconFont();
+    public NavButton(Theme t, string glyph, string text)
+    {
+        _t = t; _glyph = glyph; Text = text;
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        Cursor = Cursors.Hand;
+        BackColor = t.Sidebar;
+    }
+    public bool Selected { get => _selected; set { _selected = value; Invalidate(); } }
+    static Font? LoadIconFont()
+    {
+        foreach (var n in new[] { "Segoe Fluent Icons", "Segoe MDL2 Assets" })
+        {
+            using var f = new Font(n, 11f);
+            if (f.Name == n) return new Font(n, 11f);
+        }
+        return null;
+    }
+    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.Clear(_t.Sidebar);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var r = new Rectangle(2, 2, Width - 4, Height - 4);
+        if (_selected || _hover)
+        {
+            using var path = Theme.RoundRect(r, 6);
+            using var b = new SolidBrush(_selected ? (_t.Dark ? _t.SurfaceHover : _t.Surface) : Theme.Blend(_t.Surface, _t.Sidebar, 0.6f));
+            g.FillPath(b, path);
+        }
+        if (_selected)
+        {
+            int bh = r.Height / 2;
+            using var bar = new SolidBrush(_t.Accent);
+            using var bp = Theme.RoundRect(new RectangleF(r.X, r.Y + (r.Height - bh) / 2f, LogicalToDeviceUnits(3), bh), 1.5f);
+            g.FillPath(bar, bp);
+        }
+        int x = r.X + LogicalToDeviceUnits(14);
+        if (IconFont != null)
+        {
+            TextRenderer.DrawText(g, _glyph, IconFont, new Rectangle(x, r.Y, LogicalToDeviceUnits(22), r.Height), _t.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            x += LogicalToDeviceUnits(28);
+        }
+        TextRenderer.DrawText(g, Text, Font, new Rectangle(x, r.Y, r.Right - x, r.Height), _t.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+    }
+}
+
+/// <summary>Adapter name + details with a toggle on the right.</summary>
+public sealed class AdapterRow : Control
+{
+    readonly Theme _t;
+    readonly ToggleSwitch _toggle;
+    readonly string _detail;
+    public string AdapterName { get; }
+    public bool Checked => _toggle.Checked;
+    public AdapterRow(Theme t, string name, string detail, bool on)
+    {
+        _t = t; AdapterName = name; _detail = detail;
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        BackColor = t.Surface;
+        Height = 50;
+        _toggle = new ToggleSwitch(t, "") { Checked = on, Width = 46, Dock = DockStyle.Right, BackColor = t.Surface };
+        Controls.Add(_toggle);
+        Click += (_, _) => _toggle.Checked = !_toggle.Checked;
+        Cursor = Cursors.Hand;
+    }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.Clear(_t.Surface);
+        using var bold = Theme.UiFont(9.75f, FontStyle.Bold);
+        using var small = Theme.UiFont(8.75f);
+        int lh = TextRenderer.MeasureText("Ag", bold).Height;
+        int top = (Height - lh * 2) / 2;
+        int w = Width - _toggle.Width - 12;
+        TextRenderer.DrawText(g, AdapterName, bold, new Rectangle(0, top, w, lh), _t.Text, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        TextRenderer.DrawText(g, _detail, small, new Rectangle(0, top + lh, w, lh), _t.SubText, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+    }
+}

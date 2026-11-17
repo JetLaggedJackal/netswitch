@@ -1,0 +1,100 @@
+namespace NetSwitch;
+
+/// <summary>Turns network state into pop-up content.</summary>
+public static class PopupBuilder
+{
+    public static PopupContent Change(string name, AdapterInfo? before, AdapterInfo? after, IEnumerable<Profile> profiles, bool sticky)
+    {
+        bool nowUp = after is { IsUp: true };
+        bool wasUp = before is { IsUp: true };
+        string title = !nowUp ? "Adapter disconnected"
+            : !wasUp ? "Adapter connected"
+            : after!.Addresses.Count == 0 ? "IP address lost"
+            : "IP address changed";
+
+        var first = after?.Addresses.FirstOrDefault();
+        string big = !nowUp ? "Disconnected" : first?.Ip ?? "No IPv4 address";
+        string? suffix = nowUp && first is { Mask: { Length: > 0 } m } ? "/" + NetInfo.PrefixLength(m) : null;
+        string? previous = before == null ? null
+            : !wasUp ? "was disconnected"
+            : before.Addresses.Count == 0 ? "had no IPv4 address"
+            : "was " + string.Join(", ", before.Addresses.Select(a => a.Ip));
+
+        var rows = new List<(string, string)>();
+        if (after != null && nowUp)
+        {
+            if (first is { Mask: { Length: > 0 } mask }) rows.Add(("Subnet mask", mask));
+            if (after.Addresses.Count > 1) rows.Add(("Also", string.Join(", ", after.Addresses.Skip(1).Select(a => a.Ip))));
+            rows.Add(("Gateway", after.Gateways.Count > 0 ? string.Join(", ", after.Gateways) : "none"));
+            rows.Add(("DNS", after.Dns.Count > 0 ? string.Join(", ", after.Dns) : "none"));
+            rows.Add(("Assigned by", Addressing(after)));
+            if (after.IsWireless && NetInfo.WifiSsid(after.Name) is { } ssid) rows.Add(("Wi-Fi", ssid));
+            var match = profiles.FirstOrDefault(p => string.Equals(p.Adapter, after.Name, StringComparison.OrdinalIgnoreCase) && NetInfo.Matches(p, after));
+            if (match != null) rows.Add(("Profile", match.Name));
+            if (NetInfo.FormatSpeed(after.SpeedBps) is { Length: > 0 } speed) rows.Add(("Link speed", speed));
+            if (after.Mac.Length > 0) rows.Add(("MAC", after.Mac));
+        }
+
+        return new PopupContent
+        {
+            Kind = nowUp ? PopupKind.Change : PopupKind.Info,
+            Title = title,
+            Heading = name,
+            SubHeading = after?.Description ?? before?.Description,
+            Big = big,
+            BigSuffix = suffix,
+            Previous = previous,
+            Rows = rows,
+            CopyText = nowUp ? first?.Ip : null,
+            Sticky = sticky,
+        };
+    }
+
+    static string Addressing(AdapterInfo a)
+    {
+        if (!a.Dhcp) return "Static (set by hand)";
+        var parts = new List<string> { "DHCP" };
+        if (!string.IsNullOrEmpty(a.DhcpServer)) parts.Add("server " + a.DhcpServer);
+        if (NetInfo.FormatDuration(a.LeaseSeconds) is { Length: > 0 } lease) parts.Add("lease " + lease + " left");
+        if (a.Addresses.FirstOrDefault().Ip?.StartsWith("169.254.") == true) parts.Add("no DHCP answer (APIPA)");
+        return string.Join(" · ", parts);
+    }
+
+    public static PopupContent Applied(Profile p, AdapterInfo? a, bool sticky)
+    {
+        var rows = new List<(string, string)>();
+        if (!p.Dhcp)
+        {
+            var (ip, prefMask) = IpUtil.SplitIp(p.Ip);
+            var mask = prefMask ?? IpUtil.NormalizeMask(p.Mask) ?? p.Mask;
+            rows.Add(("Subnet mask", mask));
+            rows.Add(("Gateway", string.IsNullOrWhiteSpace(p.Gateway) ? "none" : p.Gateway));
+        }
+        rows.Add(("DNS", p.UsesAutoDns ? "from DHCP" : p.Dns.Count > 0 ? string.Join(", ", p.Dns) : "none"));
+        if (p.Dhcp) rows.Add(("Note", "The new address can take a few seconds to arrive."));
+        var ipOnly = IpUtil.SplitIp(p.Ip).ip;
+        return new PopupContent
+        {
+            Kind = PopupKind.Success,
+            Title = $"Switched to \"{p.Name}\"",
+            Heading = p.Adapter,
+            SubHeading = a?.Description,
+            Big = p.Dhcp ? "Automatic (DHCP)" : ipOnly,
+            BigSuffix = p.Dhcp ? null : "/" + NetInfo.PrefixLength(IpUtil.SplitIp(p.Ip).prefixMask ?? IpUtil.NormalizeMask(p.Mask) ?? ""),
+            Previous = a is { IsUp: true } ? "was " + a.AddressText + $" ({a.ModeText})" : null,
+            Rows = rows,
+            CopyText = p.Dhcp ? null : ipOnly,
+            Sticky = sticky,
+        };
+    }
+
+    public static PopupContent Error(string title, string message) => new()
+    {
+        Kind = PopupKind.Error, Title = title, Message = message, Sticky = true,
+    };
+
+    public static PopupContent Info(string title, string message, bool sticky = false) => new()
+    {
+        Kind = PopupKind.Info, Title = title, Message = message, Sticky = sticky,
+    };
+}
