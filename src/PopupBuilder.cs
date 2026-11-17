@@ -91,21 +91,16 @@ public static class PopupBuilder
     /// <summary>Right-click overview: every visible adapter with its address.</summary>
     public static PopupContent Overview(IEnumerable<AdapterInfo> adapters, IEnumerable<Profile> profiles)
     {
-        var entries = new List<(string, string, string?, bool)>();
+        var entries = new List<PopupEntry>();
         foreach (var a in adapters)
         {
-            string line;
-            if (!a.IsUp) line = "Disconnected";
-            else
-            {
-                var parts = new List<string> { a.Addresses.Count == 0 ? "No IPv4 address" : string.Join(", ", a.Addresses.Select(x => x.Mask.Length > 0 ? $"{x.Ip}/{NetInfo.PrefixLength(x.Mask)}" : x.Ip)) };
-                parts.Add(a.ModeText);
-                if (a.Gateways.Count > 0) parts.Add("gw " + a.Gateways[0]);
-                var match = profiles.FirstOrDefault(p => string.Equals(p.Adapter, a.Name, StringComparison.OrdinalIgnoreCase) && NetInfo.Matches(p, a));
-                if (match != null) parts.Add(match.Name);
-                line = string.Join("  ·  ", parts);
-            }
-            entries.Add((a.Name, line, a.IsUp ? a.Addresses.FirstOrDefault().Ip : null, a.IsUp));
+            if (!a.IsUp) { entries.Add(new PopupEntry(a.Name, "Disconnected", null, false)); continue; }
+            var ips = a.Addresses.Count == 0 ? "No IPv4 address" : string.Join(", ", a.Addresses.Select(x => x.Mask.Length > 0 ? $"{x.Ip}/{NetInfo.PrefixLength(x.Mask)}" : x.Ip));
+            var rest = new List<string> { a.ModeText };
+            var match = profiles.FirstOrDefault(p => string.Equals(p.Adapter, a.Name, StringComparison.OrdinalIgnoreCase) && NetInfo.Matches(p, a));
+            if (match != null) rest.Add(match.Name);
+            var gw = a.Gateways.FirstOrDefault(g => System.Net.IPAddress.TryParse(g, out _));
+            entries.Add(new PopupEntry(a.Name, ips, a.Addresses.FirstOrDefault().Ip, true, gw, string.Join("  ·  ", rest)));
         }
         return new PopupContent
         {

@@ -18,14 +18,18 @@ public sealed class PopupContent
     public List<(string Label, string Value)> Rows { get; init; } = new();
     public string? CopyText { get; init; }
     public bool Sticky { get; init; }              // stays until closed
-    /// <summary>Adapter overview: one two-line entry per adapter; clicking an entry copies its IP.</summary>
-    public List<(string Name, string Line, string? Copy, bool Up)> Entries { get; init; } = new();
+    /// <summary>Adapter overview: one two-line entry per adapter; clicking an entry copies its IP,
+    /// clicking its gateway opens network tools for it.</summary>
+    public List<PopupEntry> Entries { get; init; } = new();
     public bool ShowExit { get; init; }
     public bool CloseOnOutsideClick { get; init; }
     /// <summary>Optional main button (replaces "Copy IP").</summary>
     public string? ActionText { get; init; }
     public Action? Action { get; init; }
 }
+
+/// <summary>One adapter in the overview. The second line reads: Line · gw Gateway · Rest.</summary>
+public sealed record PopupEntry(string Name, string Line, string? Copy, bool Up, string? Gateway = null, string Rest = "");
 
 /// <summary>Custom notification window: bottom-right, no focus stealing, stacks, rich content.</summary>
 public sealed class PopupForm : Form
@@ -36,7 +40,10 @@ public sealed class PopupForm : Form
     readonly ModernButton? _exit;
     readonly System.Windows.Forms.Timer _outside = new() { Interval = 80 };
     readonly List<Rectangle> _entryRects = new();
-    int _hoverEntry = -1, _copiedEntry = -1;
+    int _hoverEntry = -1, _copiedEntry = -1, _hoverGw = -1;
+    readonly Dictionary<int, Rectangle> _gwRects = new();
+    ContextMenuStrip? _toolsMenu;
+    public static Action<string, string>? ToolRequested; // (tool, ip)
 
     readonly PopupContent _c;
     readonly Theme _t = Theme.Current;
@@ -110,7 +117,8 @@ public sealed class PopupForm : Form
             _outside.Tick += (_, _) =>
             {
                 bool down = (MouseButtons & (MouseButtons.Left | MouseButtons.Right)) != 0;
-                if (down && !wasDown && !Bounds.Contains(Cursor.Position)) BeginClose();
+                bool inMenu = _toolsMenu is { Visible: true } m && m.Bounds.Contains(Cursor.Position);
+                if (down && !wasDown && !inMenu && !Bounds.Contains(Cursor.Position)) BeginClose();
                 wasDown = down;
             };
         }
@@ -199,7 +207,7 @@ public sealed class PopupForm : Form
     {
         Open.Remove(this);
         Restack();
-        _life.Dispose(); _fade.Dispose(); _outside.Dispose();
+        _life.Dispose(); _fade.Dispose(); _outside.Dispose(); _toolsMenu?.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -349,7 +357,7 @@ public sealed class PopupForm : Form
         }
         for (int i = 0; i < _c.Entries.Count && i < _entryRects.Count; i++)
         {
-            var (name, line, copy, up) = _c.Entries[i];
+            var (name, line, copy, up, gw, rest) = _c.Entries[i];
             var r = _entryRects[i];
             if (i == _hoverEntry && copy != null)
                 using (var hb = new SolidBrush(_t.SurfaceHover)) using (var hp = Theme.RoundRect(r, 5)) g.FillPath(hb, hp);
@@ -366,7 +374,35 @@ public sealed class PopupForm : Form
                 TextRenderer.DrawText(g, hint, _fSub, new Rectangle(tx, r.Y + Px(5), etw, lh), i == _copiedEntry ? _t.Success : _t.SubText,
                     TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             }
-            TextRenderer.DrawText(g, line, _fSub, new Rectangle(tx, r.Y + Px(5) + lh, etw, r.Height - lh - Px(5)), _t.SubText, flags);
+            var lineRect = new Rectangle(tx, r.Y + Px(5) + lh, etw, r.Height - lh - Px(5));
+            if (gw == null)
+            {
+                _gwRects.Remove(i);
+                var full = rest.Length > 0 ? $"{line}  ·  {rest}" : line;
+                TextRenderer.DrawText(g, full, _fSub, lineRect, _t.SubText, flags);
+            }
+            else
+            {
+                // "<ip>  ·  " then the gateway as a link, then the rest.
+                var np = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
+                int cx = lineRect.X;
+                void Part(string text, Color color, bool last = false)
+                {
+                    int pw = last ? lineRect.Right - cx : TextRenderer.MeasureText(g, text, _fSub, Size.Empty, np).Width;
+                    TextRenderer.DrawText(g, text, _fSub, new Rectangle(cx, lineRect.Y, Math.Max(0, Math.Min(pw, lineRect.Right - cx)), lineRect.Height), color, last ? flags : np);
+                    cx += pw;
+                }
+                Part(line + "  ·  ", _t.SubText);
+                var gwText = "gw " + gw;
+                int gwW = TextRenderer.MeasureText(g, gwText, _fSub, Size.Empty, np).Width;
+                int sh = TextRenderer.MeasureText("Ag", _fSub).Height;
+                var gr = new Rectangle(cx - Px(4), lineRect.Y - Px(1), gwW + Px(8), sh + Px(2));
+                _gwRects[i] = gr;
+                if (i == _hoverGw)
+                    using (var hb = new SolidBrush(_t.Border)) using (var hp = Theme.RoundRect(gr, Px(4))) g.FillPath(hb, hp);
+                Part(gwText, _t.Accent);
+                if (rest.Length > 0) Part("  ·  " + rest, _t.SubText, last: true);
+            }
         }
     }
 
@@ -375,15 +411,48 @@ public sealed class PopupForm : Form
         bool h = _closeRect.Contains(e.Location);
         if (h != _closeHover) { _closeHover = h; Invalidate(_closeRect); }
         int he = _entryRects.FindIndex(r => r.Contains(e.Location));
-        if (he != _hoverEntry) { _hoverEntry = he; Invalidate(); }
-        Cursor = h || (he >= 0 && _c.Entries[he].Copy != null) ? Cursors.Hand : Cursors.Default;
+        int hg = GatewayAt(e.Location);
+        if (he != _hoverEntry || hg != _hoverGw) { _hoverEntry = he; _hoverGw = hg; Invalidate(); }
+        Cursor = h || hg >= 0 || (he >= 0 && _c.Entries[he].Copy != null) ? Cursors.Hand : Cursors.Default;
     }
 
-    protected override void OnMouseLeave(EventArgs e) { _closeHover = false; _hoverEntry = -1; Invalidate(); }
+    protected override void OnMouseLeave(EventArgs e) { _closeHover = false; _hoverEntry = -1; _hoverGw = -1; Invalidate(); }
+
+    int GatewayAt(Point p)
+    {
+        foreach (var (i, r) in _gwRects) if (r.Contains(p)) return i;
+        return -1;
+    }
+
+    void ShowGatewayTools(int i)
+    {
+        var gw = _c.Entries[i].Gateway!;
+        _toolsMenu?.Dispose();
+        var m = _toolsMenu = new ContextMenuStrip { ShowImageMargin = false, Font = _fBody, Renderer = new MenuRenderer(_t), BackColor = _t.Surface, Padding = new Padding(0, 4, 0, 4) };
+        ToolStripMenuItem Item(string text, string detail, string tool)
+        {
+            var it = new ToolStripMenuItem(text, null, (_, _) => { ToolRequested?.Invoke(tool, gw); if (tool == "copy") { _copiedEntry = -1; } })
+            { Padding = new Padding(4, 5, 4, 5), ShortcutKeyDisplayString = detail, ShowShortcutKeys = detail.Length > 0 };
+            return it;
+        }
+        var header = new ToolStripMenuItem($"Gateway {gw}") { Enabled = false, Tag = "header", Padding = new Padding(4, 4, 4, 2) };
+        m.Items.Add(header);
+        m.Items.Add(Item("Ping continuously", "ping -t", "ping-t"));
+        m.Items.Add(Item("Ping 4 times", "ping", "ping"));
+        m.Items.Add(Item("Trace route", "tracert -d", "tracert"));
+        m.Items.Add(Item("Path ping", "pathping -n", "pathping"));
+        m.Items.Add(new ToolStripSeparator());
+        m.Items.Add(Item("Open in browser", "http://", "browser"));
+        m.Items.Add(Item("Copy address", "", "copy"));
+        var r = _gwRects[i];
+        m.Show(this, new Point(r.Left, r.Bottom + Px(2)));
+    }
 
     protected override void OnMouseClick(MouseEventArgs e)
     {
         if (_closeRect.Contains(e.Location)) { BeginClose(); return; }
+        int g = GatewayAt(e.Location);
+        if (g >= 0) { ShowGatewayTools(g); return; }
         int i = _entryRects.FindIndex(r => r.Contains(e.Location));
         if (i >= 0 && _c.Entries[i].Copy is { } ip)
         {

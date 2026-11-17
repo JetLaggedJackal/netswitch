@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.NetworkInformation;
 using System.Reflection;
 
@@ -46,6 +47,7 @@ public sealed class TrayApp : ApplicationContext
         _menu.Closed += (_, _) => _icon.ContextMenuStrip = null;
         PopupForm.OpenProfilesRequested = OpenEditor;
         PopupForm.ExitRequested = ExitThread;
+        PopupForm.ToolRequested = RunTool;
 
         _last = NetInfo.Snapshot();
         UpdateTooltip();
@@ -210,6 +212,37 @@ public sealed class TrayApp : ApplicationContext
     {
         void show() => PopupForm.Show(c, _cfg.PopupSeconds);
         if (_invoker.InvokeRequired) _invoker.BeginInvoke(show); else show();
+    }
+
+    // ---------------- network tools ----------------
+
+    /// <summary>Opens a console running ping/tracert/pathping against an address, or the router page.</summary>
+    static void RunTool(string tool, string ip)
+    {
+        if (!System.Net.IPAddress.TryParse(ip, out var addr)) return; // only ever pass a real address to cmd
+        var a = addr.ToString();
+        try
+        {
+            switch (tool)
+            {
+                case "copy": Clipboard.SetText(a); return;
+                case "browser":
+                    var host = addr.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 ? $"[{a}]" : a;
+                    Process.Start(new ProcessStartInfo($"http://{host}/") { UseShellExecute = true });
+                    return;
+            }
+            var cmd = tool switch
+            {
+                "ping-t" => $"ping -t {a}",
+                "ping" => $"ping {a}",
+                "tracert" => $"tracert -d {a}",
+                "pathping" => $"pathping -n {a}",
+                _ => null,
+            };
+            if (cmd == null) return;
+            Process.Start(new ProcessStartInfo("cmd.exe", $"/k title {cmd} & {cmd}") { UseShellExecute = true });
+        }
+        catch { }
     }
 
     // ---------------- switching ----------------
