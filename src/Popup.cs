@@ -644,10 +644,37 @@ public sealed class PopupForm : Form
         return -1;
     }
 
-    void ShowActions(string header, List<PopupAction> actions, Point at)
+    // Which menu was open and when it closed: the click that closes a menu also reaches us,
+    // and that click must not open the same menu again.
+    string? _menuKey;
+    DateTime _menuClosedAt;
+
+    bool ToggleOff(string key)
+    {
+        bool open = _toolsMenu is { Visible: true };
+        bool justClosed = (DateTime.UtcNow - _menuClosedAt).TotalMilliseconds < 400;
+        if (_menuKey == key && (open || justClosed))
+        {
+            _toolsMenu?.Close();
+            _menuKey = null;
+            return true;
+        }
+        return false;
+    }
+
+    ContextMenuStrip NewMenu(string key)
     {
         _toolsMenu?.Dispose();
-        var m = _toolsMenu = new ContextMenuStrip { ShowImageMargin = false, Font = _fBody, Renderer = new MenuRenderer(_t), BackColor = _t.Surface, Padding = new Padding(0, 4, 0, 4) };
+        var m = new ContextMenuStrip { ShowImageMargin = false, Font = _fBody, Renderer = new MenuRenderer(_t), BackColor = _t.Surface, Padding = new Padding(0, 4, 0, 4) };
+        m.Closed += (_, _) => { _menuClosedAt = DateTime.UtcNow; };
+        _menuKey = key;
+        _toolsMenu = m;
+        return m;
+    }
+
+    void ShowActions(string header, List<PopupAction> actions, Point at)
+    {
+        var m = NewMenu("entry:" + header);
         m.Items.Add(new ToolStripMenuItem(header) { Enabled = false, Tag = "header", Padding = new Padding(4, 4, 4, 2) });
         foreach (var a in actions)
         {
@@ -664,8 +691,7 @@ public sealed class PopupForm : Form
     void ShowGatewayTools(int i)
     {
         var gw = _c.Entries[i].Gateway!;
-        _toolsMenu?.Dispose();
-        var m = _toolsMenu = new ContextMenuStrip { ShowImageMargin = false, Font = _fBody, Renderer = new MenuRenderer(_t), BackColor = _t.Surface, Padding = new Padding(0, 4, 0, 4) };
+        var m = NewMenu("gw:" + i);
         ToolStripMenuItem Item(string text, string detail, string tool)
         {
             var it = new ToolStripMenuItem(text, null, (_, _) => { ToolRequested?.Invoke(tool, gw); if (tool == "copy") { _copiedEntry = -1; } })
@@ -689,7 +715,7 @@ public sealed class PopupForm : Form
     {
         if (_closeRect.Contains(e.Location)) { BeginClose(); return; }
         int g = GatewayAt(e.Location);
-        if (g >= 0) { ShowGatewayTools(g); return; }
+        if (g >= 0) { if (!ToggleOff("gw:" + g)) ShowGatewayTools(g); return; }
         if (_pub != null && _pubRect.Contains(e.Location))
         {
             try { Clipboard.SetText(_pub.Ip); _pubCopied = true; Invalidate(_netRect); } catch { }
@@ -699,7 +725,7 @@ public sealed class PopupForm : Form
         if (i >= 0 && _c.Entries[i].Click is { } click) { BeginClose(); click(); return; }
         if (i >= 0 && _c.Entries[i].Actions is { Count: > 0 } actions)
         {
-            ShowActions(_c.Entries[i].Name, actions, new Point(e.X, e.Y + Px(4)));
+            if (!ToggleOff("entry:" + _c.Entries[i].Name)) ShowActions(_c.Entries[i].Name, actions, new Point(e.X, e.Y + Px(4)));
             return;
         }
         if (i >= 0 && _c.Entries[i].Copy is { } ip)
