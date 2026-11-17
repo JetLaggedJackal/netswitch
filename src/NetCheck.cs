@@ -17,9 +17,17 @@ public static class NetCheck
 
     public static async Task<NetCheckResult> RunAsync()
     {
-        var pings = Targets.Select(PingAsync).ToArray();
+        var pings = Targets.Select(t => PingAsync(t, 1500)).ToArray();
         var dns = DnsAsync();
         await Task.WhenAll(pings.Cast<Task>().Append(dns));
+        // One lost or slow ping on Wi-Fi is normal. Before calling it a problem, ask both again
+        // with more time, so a single dropped packet doesn't flip the status (and the tray icon).
+        if (pings.All(p => p.Result == null))
+        {
+            var retry = Targets.Select(t => PingAsync(t, 3000)).ToArray();
+            await Task.WhenAll(retry);
+            pings = retry;
+        }
 
         var parts = new List<string>();
         for (int i = 0; i < Targets.Length; i++)
@@ -38,7 +46,7 @@ public static class NetCheck
         {
             (true, true) => (NetHealth.Online, "Online"),
             (true, false) => (NetHealth.Limited, "Online, DNS not resolving"),
-            (false, true) => (NetHealth.Limited, "Limited, pings blocked"),
+            (false, true) => (NetHealth.Limited, "Limited, pings not answered"),
             _ => (NetHealth.Offline, "Offline"),
         };
         return new NetCheckResult(health, summary, string.Join("  ·  ", parts));
