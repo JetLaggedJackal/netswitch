@@ -88,6 +88,37 @@ public static class PopupBuilder
         };
     }
 
+    /// <summary>Right-click overview: every visible adapter with its address.</summary>
+    public static PopupContent Overview(IEnumerable<AdapterInfo> adapters, IEnumerable<Profile> profiles)
+    {
+        var entries = new List<(string, string, string?, bool)>();
+        foreach (var a in adapters)
+        {
+            string line;
+            if (!a.IsUp) line = "Disconnected";
+            else
+            {
+                var parts = new List<string> { a.Addresses.Count == 0 ? "No IPv4 address" : string.Join(", ", a.Addresses.Select(x => x.Mask.Length > 0 ? $"{x.Ip}/{NetInfo.PrefixLength(x.Mask)}" : x.Ip)) };
+                parts.Add(a.ModeText);
+                if (a.Gateways.Count > 0) parts.Add("gw " + a.Gateways[0]);
+                var match = profiles.FirstOrDefault(p => string.Equals(p.Adapter, a.Name, StringComparison.OrdinalIgnoreCase) && NetInfo.Matches(p, a));
+                if (match != null) parts.Add(match.Name);
+                line = string.Join("  ·  ", parts);
+            }
+            entries.Add((a.Name, line, a.IsUp ? a.Addresses.FirstOrDefault().Ip : null, a.IsUp));
+        }
+        return new PopupContent
+        {
+            Kind = PopupKind.Info,
+            Title = "Network adapters",
+            Entries = entries,
+            Message = entries.Count == 0 ? "No adapters to show. Hidden adapters can be turned back on in Settings." : null,
+            ShowExit = true,
+            CloseOnOutsideClick = true,
+            Sticky = true,
+        };
+    }
+
     public static PopupContent Error(string title, string message) => new()
     {
         Kind = PopupKind.Error, Title = title, Message = message, Sticky = true,

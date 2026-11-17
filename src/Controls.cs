@@ -5,33 +5,20 @@ using System.Drawing.Text;
 
 namespace NetSwitch;
 
-/// <summary>Rounded container with a surface color and a thin border.</summary>
+/// <summary>A section of the page: flat, no box, just spacing (minimal layout).</summary>
 public class Card : Panel
 {
     readonly Theme _t;
-    public int Radius { get; set; } = 8;
     public Card(Theme t)
     {
         _t = t;
-        DoubleBuffered = true;
-        BackColor = t.Window;
-        Padding = new Padding(16, 14, 16, 14);
-        SetStyle(ControlStyles.ResizeRedraw, true);
-    }
-    protected override void OnPaintBackground(PaintEventArgs e)
-    {
-        e.Graphics.Clear(Parent?.BackColor ?? _t.Window);
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var path = Theme.RoundRect(new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f), Radius);
-        using var b = new SolidBrush(_t.Surface);
-        using var p = new Pen(_t.Border);
-        e.Graphics.FillPath(b, path);
-        e.Graphics.DrawPath(p, path);
+        BackColor = t.Panel;
+        Padding = new Padding(0);
     }
     protected override void OnControlAdded(ControlEventArgs e)
     {
         base.OnControlAdded(e);
-        if (e.Control is Label or CheckBox or FlowLayoutPanel or TableLayoutPanel) e.Control.BackColor = _t.Surface;
+        if (e.Control is Label or CheckBox or FlowLayoutPanel or TableLayoutPanel) e.Control.BackColor = _t.Panel;
     }
 }
 
@@ -52,7 +39,7 @@ public class ModernTextBox : Control
         _box.LostFocus += (_, _) => Invalidate();
         Controls.Add(_box);
         BackColor = t.Window;
-        Height = 34;
+        Height = 30;
         Cursor = Cursors.IBeam;
     }
     [AllowNull]
@@ -116,8 +103,8 @@ public class ModernButton : Button
         FlatStyle = FlatStyle.Flat;
         FlatAppearance.BorderSize = 0;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
-        Height = 32;
-        MinimumSize = new Size(88, 32);
+        Height = 30;
+        MinimumSize = new Size(76, 30);
         Cursor = Cursors.Hand;
         AutoSize = false;
         Padding = new Padding(12, 0, 12, 0);
@@ -129,7 +116,7 @@ public class ModernButton : Button
     public override Size GetPreferredSize(Size proposed)
     {
         var s = TextRenderer.MeasureText(Text, Font);
-        return new Size(Math.Max(MinimumSize.Width, s.Width + Padding.Horizontal + 8), Math.Max(MinimumSize.Height, s.Height + 12));
+        return new Size(Math.Max(MinimumSize.Width, s.Width + Padding.Horizontal + 8), Math.Max(MinimumSize.Height, s.Height + 10));
     }
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -184,10 +171,18 @@ public class SegmentedControl : Control
         _t = t; _options = options;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
                  | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
-        Height = 34;
+        Height = 30;
         Cursor = Cursors.Hand;
         TabStop = true;
+        AutoSize = true;
     }
+    public override Size GetPreferredSize(Size proposed)
+    {
+        int seg = _options.Max(o => TextRenderer.MeasureText(o, Font).Width) + LogicalToDeviceUnits(28);
+        return new Size(seg * _options.Length + 7, Height);
+    }
+    protected override void OnFontChanged(EventArgs e) { base.OnFontChanged(e); if (AutoSize) Size = GetPreferredSize(Size.Empty); }
+    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); if (AutoSize) Size = GetPreferredSize(Size.Empty); }
     public int SelectedIndex
     {
         get => _selected;
@@ -277,39 +272,119 @@ public class ToggleSwitch : Control
     }
 }
 
-/// <summary>Flat owner-drawn drop-down list.</summary>
-public class ModernCombo : ComboBox
+/// <summary>Themed drop-down: looks like the text boxes, opens a styled menu.</summary>
+public class ModernCombo : Control
 {
     readonly Theme _t;
+    readonly ContextMenuStrip _menu;
+    object? _selected;
+    bool _hover, _open;
+    public List<object> Items { get; } = new();
     public Func<object, (string main, string? sub)>? Describe { get; set; }
+    public event EventHandler? SelectedIndexChanged;
+
     public ModernCombo(Theme t)
     {
         _t = t;
-        DropDownStyle = ComboBoxStyle.DropDownList;
-        DrawMode = DrawMode.OwnerDrawFixed;
-        FlatStyle = FlatStyle.Flat;
-        BackColor = t.Surface;
-        ForeColor = t.Text;
-        ItemHeight = 26;
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+                 | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+        Height = 30;
+        Cursor = Cursors.Hand;
+        TabStop = true;
+        _menu = new ContextMenuStrip { ShowCheckMargin = true, ShowImageMargin = false, Renderer = new MenuRenderer(t), BackColor = t.Surface };
+        _menu.HandleCreated += (_, _) => MenuRenderer.RoundCorners(_menu);
+        _menu.Closed += (_, _) => { _open = false; Invalidate(); };
     }
-    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); _t.ApplyControlTheme(this); }
-    protected override void OnDrawItem(DrawItemEventArgs e)
+
+    public object? SelectedItem
+    {
+        get => _selected;
+        set
+        {
+            if (Equals(_selected, value)) return;
+            _selected = value;
+            Invalidate();
+            SelectedIndexChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    (string main, string? sub) Text2(object o) => Describe?.Invoke(o) ?? (o.ToString() ?? "", null);
+
+    void OpenMenu()
+    {
+        if (!Enabled || Items.Count == 0) return;
+        _menu.Items.Clear();
+        _menu.Font = Font;
+        foreach (var it in Items)
+        {
+            var (main, sub) = Text2(it);
+            var item = new ToolStripMenuItem(main)
+            {
+                Checked = Equals(it, _selected),
+                ShortcutKeyDisplayString = sub,
+                ShowShortcutKeys = sub != null,
+                Padding = new Padding(4, 4, 4, 4),
+            };
+            var value = it;
+            item.Click += (_, _) => SelectedItem = value;
+            _menu.Items.Add(item);
+        }
+        _menu.MinimumSize = new Size(Width, 0);
+        _open = true;
+        Invalidate();
+        _menu.Show(this, new Point(0, Height + 2));
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); Focus(); if (e.Button == MouseButtons.Left) OpenMenu(); }
+    protected override bool IsInputKey(Keys k) => k is Keys.Down or Keys.Up || base.IsInputKey(k);
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        int i = _selected == null ? -1 : Items.IndexOf(_selected);
+        if (e.KeyCode == Keys.Down && i < Items.Count - 1) SelectedItem = Items[i + 1];
+        else if (e.KeyCode == Keys.Up && i > 0) SelectedItem = Items[i - 1];
+        else if (e.KeyCode is Keys.Space or Keys.F4 || (e.Alt && e.KeyCode == Keys.Down)) OpenMenu();
+    }
+    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+    protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+
+    protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        bool edit = (e.State & DrawItemState.ComboBoxEdit) != 0;
-        bool sel = (e.State & DrawItemState.Selected) != 0 && !edit;
-        using (var b = new SolidBrush(sel ? _t.AccentSoft : _t.Surface)) g.FillRectangle(b, e.Bounds);
-        if (e.Index < 0) return;
-        var item = Items[e.Index];
-        var (main, sub) = item == null ? ("", null) : Describe?.Invoke(item) ?? (item.ToString() ?? "", null);
-        var r = new Rectangle(e.Bounds.X + 6, e.Bounds.Y, e.Bounds.Width - 12, e.Bounds.Height);
-        var mainSize = TextRenderer.MeasureText(g, main, Font, r.Size, TextFormatFlags.NoPadding);
-        TextRenderer.DrawText(g, main, Font, r, _t.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
-        if (!string.IsNullOrEmpty(sub))
+        g.Clear(Parent?.BackColor ?? _t.Window);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+        using (var path = Theme.RoundRect(r, 5))
+        using (var b = new SolidBrush(_hover && !_open ? _t.SurfaceHover : _t.Surface))
+        using (var p = new Pen(_t.Border))
         {
-            var subRect = new Rectangle(r.X + mainSize.Width + 10, r.Y, Math.Max(0, r.Width - mainSize.Width - 10), r.Height);
-            TextRenderer.DrawText(g, sub, Font, subRect, _t.SubText, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+            g.FillPath(b, path);
+            g.DrawPath(p, path);
         }
+        if (Focused || _open)
+        {
+            g.SmoothingMode = SmoothingMode.None;
+            using var acc = new Pen(_t.Accent, 2);
+            g.DrawLine(acc, 4, Height - 2, Width - 5, Height - 2);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+        }
+        int pad = LogicalToDeviceUnits(10), chevron = LogicalToDeviceUnits(24);
+        var textRect = new Rectangle(pad, 0, Width - pad - chevron, Height);
+        if (_selected != null)
+        {
+            var (main, sub) = Text2(_selected);
+            var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
+            var mw = Math.Min(textRect.Width, TextRenderer.MeasureText(g, main, Font, textRect.Size, flags).Width);
+            TextRenderer.DrawText(g, main, Font, new Rectangle(textRect.X, 0, mw, Height), _t.Text, flags);
+            if (!string.IsNullOrEmpty(sub) && textRect.Width - mw > 30)
+                TextRenderer.DrawText(g, sub, Font, new Rectangle(textRect.X + mw + LogicalToDeviceUnits(8), 0, textRect.Width - mw - LogicalToDeviceUnits(8), Height), _t.SubText, flags);
+        }
+        // chevron
+        float cx = Width - chevron / 2f - 2, cy = Height / 2f, s = LogicalToDeviceUnits(4);
+        using var cp = new Pen(_t.SubText, Math.Max(1.2f, DeviceDpi / 96f * 1.2f));
+        g.DrawLines(cp, new[] { new PointF(cx - s, cy - s / 2), new PointF(cx, cy + s / 2), new PointF(cx + s, cy - s / 2) });
     }
 }
 
@@ -325,11 +400,11 @@ public static class Ui
     /// <summary>A small caption above a field.</summary>
     public static Control Field(Theme t, string caption, Control input)
     {
-        var p = new TableLayoutPanel { ColumnCount = 1, RowCount = 2, Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 0, 12, 10), BackColor = t.Surface };
+        var p = new TableLayoutPanel { ColumnCount = 1, RowCount = 2, Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 0, 12, 8), BackColor = t.Panel };
         p.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         p.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        var l = Label(t, caption, 9f, FontStyle.Regular, sub: true);
-        l.Margin = new Padding(1, 0, 0, 4);
+        var l = Label(t, caption, 8.5f, FontStyle.Regular, sub: true);
+        l.Margin = new Padding(1, 0, 0, 3);
         p.Controls.Add(l, 0, 0);
         input.Dock = DockStyle.Top;
         input.Margin = new Padding(0);

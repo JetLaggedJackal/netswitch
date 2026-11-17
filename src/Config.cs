@@ -36,6 +36,8 @@ public sealed class AppConfig
     public List<Profile> Profiles { get; set; } = new();
     /// <summary>Adapter names to watch for IP changes.</summary>
     public List<string> WatchAdapters { get; set; } = new();
+    /// <summary>Adapters not listed at the top of the tray menu.</summary>
+    public List<string> HiddenAdapters { get; set; } = new();
     public bool NotifyOnIpChange { get; set; } = true;
     /// <summary>Keep pop-ups open until closed by hand.</summary>
     public bool PopupStaysOpen { get; set; }
@@ -69,6 +71,7 @@ public sealed class AppConfig
         cfg.Path = path;
         cfg.Profiles ??= new();
         cfg.WatchAdapters ??= new();
+        cfg.HiddenAdapters ??= new();
         foreach (var p in cfg.Profiles) p.Dns ??= new();
         return cfg;
     }
@@ -80,6 +83,9 @@ public sealed class AppConfig
         File.WriteAllText(tmp, JsonSerializer.Serialize(this, JsonOpts));
         File.Move(tmp, Path, true);
     }
+
+    public bool IsHidden(string adapter) =>
+        HiddenAdapters.Any(a => string.Equals(a, adapter, StringComparison.OrdinalIgnoreCase));
 
     public bool IsWatched(string adapter) =>
         WatchAdapters.Any(a => string.Equals(a, adapter, StringComparison.OrdinalIgnoreCase));

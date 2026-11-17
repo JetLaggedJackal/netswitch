@@ -84,6 +84,24 @@ public static class NetInfo
         return result;
     }
 
+    static readonly string[] VirtualHints =
+        { "virtual", "hyper-v", "vmware", "zerotier", "wintun", "tap-", "tap ", "vpn", "anyconnect", "wireguard", "tailscale", "bluetooth", "loopback", "pseudo" };
+
+    /// <summary>Best guess whether this is a real network card (Wi-Fi, Ethernet, USB/dock) rather than a VPN or VM adapter.</summary>
+    public static bool LooksPhysical(AdapterInfo a) =>
+        !a.Name.StartsWith("vEthernet", StringComparison.OrdinalIgnoreCase)
+        && !VirtualHints.Any(h => a.Description.Contains(h, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Order for lists: connected physical adapters first.</summary>
+    public static IEnumerable<AdapterInfo> Ordered(IEnumerable<AdapterInfo> list) =>
+        list.OrderByDescending(a => a.IsUp).ThenByDescending(LooksPhysical).ThenByDescending(a => a.Gateways.Count).ThenBy(a => a.Name);
+
+    /// <summary>The adapter most likely to be "the" network connection.</summary>
+    public static AdapterInfo? Primary(IEnumerable<AdapterInfo> list) =>
+        list.Where(a => a.IsUp && a.Addresses.Count > 0)
+            .OrderByDescending(LooksPhysical).ThenByDescending(a => a.Gateways.Count).ThenByDescending(a => a.IsWireless)
+            .FirstOrDefault();
+
     static long SafeSpeed(NetworkInterface n) { try { return n.Speed; } catch { return 0; } }
 
     public static int PrefixLength(string mask)

@@ -9,7 +9,8 @@ public sealed class Theme
 {
     public bool Dark { get; private init; }
     public Color Window { get; private init; }      // page background
-    public Color Surface { get; private init; }     // cards, inputs
+    public Color Surface { get; private init; }     // inputs, menus, pop-ups
+    public Color Panel => Window;                  // section background (flat layout)
     public Color SurfaceHover { get; private init; }
     public Color Sidebar { get; private init; }
     public Color Border { get; private init; }

@@ -18,6 +18,10 @@ public sealed class PopupContent
     public List<(string Label, string Value)> Rows { get; init; } = new();
     public string? CopyText { get; init; }
     public bool Sticky { get; init; }              // stays until closed
+    /// <summary>Adapter overview: one two-line entry per adapter; clicking an entry copies its IP.</summary>
+    public List<(string Name, string Line, string? Copy, bool Up)> Entries { get; init; } = new();
+    public bool ShowExit { get; init; }
+    public bool CloseOnOutsideClick { get; init; }
 }
 
 /// <summary>Custom notification window: bottom-right, no focus stealing, stacks, rich content.</summary>
@@ -25,6 +29,11 @@ public sealed class PopupForm : Form
 {
     static readonly List<PopupForm> Open = new();
     public static Action? OpenProfilesRequested;
+    public static Action? ExitRequested;
+    readonly ModernButton? _exit;
+    readonly System.Windows.Forms.Timer _outside = new() { Interval = 80 };
+    readonly List<Rectangle> _entryRects = new();
+    int _hoverEntry = -1, _copiedEntry = -1;
 
     readonly PopupContent _c;
     readonly Theme _t = Theme.Current;
@@ -40,11 +49,15 @@ public sealed class PopupForm : Form
     float S => DeviceDpi / 96f;
     int Px(float v) => (int)Math.Round(v * S);
 
-    public static void Show(PopupContent c, int seconds)
+    public static PopupForm Show(PopupContent c, int seconds)
     {
         var f = new PopupForm(c, seconds);
         f.ShowPopup();
+        return f;
     }
+
+    public bool IsOpen => !IsDisposed && !_fadingOut;
+    public void Dismiss() => BeginClose();
 
     PopupForm(PopupContent c, int seconds)
     {
@@ -76,7 +89,23 @@ public sealed class PopupForm : Form
             };
             Controls.Add(_copy);
         }
-        _open = new ModernButton(_t, "Profiles…") { Font = _fBody, TabStop = false };
+        if (c.ShowExit)
+        {
+            _exit = new ModernButton(_t, "Exit") { Font = _fBody, TabStop = false, Ghost = true };
+            _exit.Click += (_, _) => { BeginClose(); ExitRequested?.Invoke(); };
+            Controls.Add(_exit);
+        }
+        if (c.CloseOnOutsideClick)
+        {
+            bool wasDown = true; // ignore the click that opened us
+            _outside.Tick += (_, _) =>
+            {
+                bool down = (MouseButtons & (MouseButtons.Left | MouseButtons.Right)) != 0;
+                if (down && !wasDown && !Bounds.Contains(Cursor.Position)) BeginClose();
+                wasDown = down;
+            };
+        }
+        _open = new ModernButton(_t, "Settings…") { Font = _fBody, TabStop = false };
         _open.Click += (_, _) => { OpenProfilesRequested?.Invoke(); BeginClose(); };
         Controls.Add(_open);
 
@@ -115,6 +144,7 @@ public sealed class PopupForm : Form
         Visible = true;
         _fade.Start();
         if (!_c.Sticky) _life.Start();
+        if (_c.CloseOnOutsideClick) _outside.Start();
     }
 
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
@@ -160,7 +190,7 @@ public sealed class PopupForm : Form
     {
         Open.Remove(this);
         Restack();
-        _life.Dispose(); _fade.Dispose();
+        _life.Dispose(); _fade.Dispose(); _outside.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -184,10 +214,26 @@ public sealed class PopupForm : Form
             y += Px(14);
             foreach (var (_, v) in _c.Rows) y += Measure(g, v, _fBody, width - LabelWidth()).Height + Px(5);
         }
+        _entryRects.Clear();
+        if (_c.Entries.Count > 0)
+        {
+            y += Px(10);
+            int eh = TextRenderer.MeasureText("Ag", _fHeading).Height + TextRenderer.MeasureText("Ag", _fSub).Height + Px(10);
+            foreach (var _ in _c.Entries)
+            {
+                _entryRects.Add(new Rectangle(Pad - Px(8), y, width - Pad * 2 + Px(16), eh));
+                y += eh + Px(2);
+            }
+        }
         _contentHeight = y;
-        int btnH = Px(32);
+        int btnH = Px(30);
         y += Px(12);
         int x = width - Pad;
+        if (_exit != null)
+        {
+            var w = Math.Max(Px(60), TextRenderer.MeasureText(_exit.Text, _exit.Font).Width + Px(24));
+            _exit.SetBounds(Pad - Px(8), y, w, btnH);
+        }
         foreach (var b in new[] { _open, _copy })
         {
             if (b == null) continue;
@@ -292,19 +338,47 @@ public sealed class PopupForm : Form
                 y += h + Px(5);
             }
         }
+        for (int i = 0; i < _c.Entries.Count && i < _entryRects.Count; i++)
+        {
+            var (name, line, copy, up) = _c.Entries[i];
+            var r = _entryRects[i];
+            if (i == _hoverEntry && copy != null)
+                using (var hb = new SolidBrush(_t.SurfaceHover)) using (var hp = Theme.RoundRect(r, 5)) g.FillPath(hb, hp);
+            int lh = TextRenderer.MeasureText("Ag", _fHeading).Height;
+            int edot = Px(8);
+            using (var db = new SolidBrush(up ? _t.Success : _t.Border))
+                g.FillEllipse(db, r.X + Px(8), r.Y + Px(5) + (lh - edot) / 2, edot, edot);
+            int tx = r.X + Px(24), etw = r.Width - Px(32);
+            var flags = TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
+            TextRenderer.DrawText(g, name, _fHeading, new Rectangle(tx, r.Y + Px(5), etw - Px(60), lh), _t.Text, flags);
+            if (i == _copiedEntry || (i == _hoverEntry && copy != null))
+            {
+                var hint = i == _copiedEntry ? "Copied" : "Copy IP";
+                TextRenderer.DrawText(g, hint, _fSub, new Rectangle(tx, r.Y + Px(5), etw, lh), i == _copiedEntry ? _t.Success : _t.SubText,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            }
+            TextRenderer.DrawText(g, line, _fSub, new Rectangle(tx, r.Y + Px(5) + lh, etw, r.Height - lh - Px(5)), _t.SubText, flags);
+        }
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
         bool h = _closeRect.Contains(e.Location);
         if (h != _closeHover) { _closeHover = h; Invalidate(_closeRect); }
-        Cursor = h ? Cursors.Hand : Cursors.Default;
+        int he = _entryRects.FindIndex(r => r.Contains(e.Location));
+        if (he != _hoverEntry) { _hoverEntry = he; Invalidate(); }
+        Cursor = h || (he >= 0 && _c.Entries[he].Copy != null) ? Cursors.Hand : Cursors.Default;
     }
 
-    protected override void OnMouseLeave(EventArgs e) { _closeHover = false; Invalidate(); }
+    protected override void OnMouseLeave(EventArgs e) { _closeHover = false; _hoverEntry = -1; Invalidate(); }
 
     protected override void OnMouseClick(MouseEventArgs e)
     {
-        if (_closeRect.Contains(e.Location)) BeginClose();
+        if (_closeRect.Contains(e.Location)) { BeginClose(); return; }
+        int i = _entryRects.FindIndex(r => r.Contains(e.Location));
+        if (i >= 0 && _c.Entries[i].Copy is { } ip)
+        {
+            try { Clipboard.SetText(ip); _copiedEntry = i; Invalidate(); } catch { }
+        }
     }
 }

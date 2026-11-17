@@ -34,6 +34,18 @@ static class Preview
                 host.Shown += (_, _) => PopupForm.Show(c, 600);
                 Application.Run(host);
                 break;
+            case "overview":
+                var fake = new List<AdapterInfo>
+                {
+                    new("Wi-Fi", "MediaTek Wi-Fi 6 MT7921", true, true, new List<(string, string)> { ("192.168.1.73", "255.255.255.0") }, new List<string> { "192.168.1.1" }, new List<string>()),
+                    new("ZeroTier One [ce3bd3f908edbf0a]", "ZeroTier Virtual Port", true, false, new List<(string, string)> { ("172.30.173.86", "255.255.0.0") }, new List<string>(), new List<string>()),
+                    new("vEthernet (Default Switch)", "Hyper-V Virtual Ethernet Adapter", true, false, new List<(string, string)> { ("172.20.240.1", "255.255.240.0") }, new List<string>(), new List<string>()),
+                    new("Ethernet 5", "Cisco AnyConnect", false, true, new List<(string, string)>(), new List<string>(), new List<string>()),
+                };
+                var oh = new Form { ShowInTaskbar = false, Opacity = 0, Size = new Size(1, 1) };
+                oh.Shown += (_, _) => PopupForm.Show(PopupBuilder.Overview(fake, cfg.Profiles), 600);
+                Application.Run(oh);
+                break;
             case "menu":
                 var app = new TrayApp(cfg);
                 var menu = (ContextMenuStrip)typeof(TrayApp).GetField("_menu", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(app)!;

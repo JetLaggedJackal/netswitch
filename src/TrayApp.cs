@@ -35,17 +35,17 @@ public sealed class TrayApp : ApplicationContext
         {
             Icon = LoadIcon(),
             Text = "NetSwitch",
-            ContextMenuStrip = _menu,
             Visible = true,
         };
-        // Single left click opens the same menu as a right click.
+        // Left click: profile menu (pick one to switch). Right click: adapter overview pop-up.
         _icon.MouseUp += (_, e) =>
         {
-            if (e.Button == MouseButtons.Left)
-                typeof(NotifyIcon).GetMethod("ShowContextMenu", BindingFlags.Instance | BindingFlags.NonPublic)
-                    ?.Invoke(_icon, null);
+            if (e.Button == MouseButtons.Left) ShowProfileMenu();
+            else if (e.Button == MouseButtons.Right) ToggleOverview();
         };
+        _menu.Closed += (_, _) => _icon.ContextMenuStrip = null;
         PopupForm.OpenProfilesRequested = OpenEditor;
+        PopupForm.ExitRequested = ExitThread;
 
         _last = NetInfo.Snapshot();
         UpdateTooltip();
@@ -65,10 +65,7 @@ public sealed class TrayApp : ApplicationContext
 
     void SeedDefaults()
     {
-        var primary = NetInfo.Snapshot().Values
-            .Where(a => a.IsUp && a.Addresses.Count > 0)
-            .OrderByDescending(a => a.Gateways.Count)
-            .FirstOrDefault();
+        var primary = NetInfo.Primary(NetInfo.Snapshot().Values);
         if (primary != null)
         {
             _cfg.Profiles.Add(new Profile { Name = "Automatic (DHCP)", Adapter = primary.Name, Dhcp = true });
@@ -85,6 +82,25 @@ public sealed class TrayApp : ApplicationContext
 
     // ---------------- menu ----------------
 
+    PopupForm? _overview;
+
+    void ShowProfileMenu()
+    {
+        _overview?.Dismiss();
+        // NotifyIcon's own ShowContextMenu handles focus so the menu closes properly when clicking away.
+        _icon.ContextMenuStrip = _menu;
+        typeof(NotifyIcon).GetMethod("ShowContextMenu", BindingFlags.Instance | BindingFlags.NonPublic)?.Invoke(_icon, null);
+    }
+
+    void ToggleOverview()
+    {
+        if (_overview is { IsOpen: true }) { _overview.Dismiss(); _overview = null; return; }
+        _cfg = _fixedConfig ?? AppConfig.Load();
+        var snap = NetInfo.Snapshot();
+        var visible = NetInfo.Ordered(snap.Values).Where(a => !_cfg.IsHidden(a.Name));
+        _overview = PopupForm.Show(PopupBuilder.Overview(visible, _cfg.Profiles), 30);
+    }
+
     void BuildMenu()
     {
         _cfg = _fixedConfig ?? AppConfig.Load(); // pick up edits made outside the app
@@ -100,22 +116,6 @@ public sealed class TrayApp : ApplicationContext
             var i = new ToolStripMenuItem(text, null, onClick) { Padding = new Padding(4, 5, 4, 5) };
             return i;
         }
-
-        // Status header: adapters that have profiles or are watched.
-        var shown = _cfg.Profiles.Select(p => p.Adapter).Concat(_cfg.WatchAdapters)
-            .Where(n => !string.IsNullOrEmpty(n)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        foreach (var name in shown)
-        {
-            var text = snap.TryGetValue(name, out var a) ? a.Name : name;
-            var item = Item(text);
-            item.Tag = "header";
-            item.ShortcutKeyDisplayString = a == null ? "not found" : a.IsUp ? $"{a.AddressText}  ·  {a.ModeText}" : "disconnected";
-            item.ShowShortcutKeys = true;
-            item.Click += (_, _) => { if (a != null) ShowAdapterDetails(a); };
-            item.ToolTipText = "Click for details";
-            _menu.Items.Add(item);
-        }
-        if (shown.Count > 0) _menu.Items.Add(new ToolStripSeparator());
 
         // Profiles, one click to apply.
         bool multiAdapter = _cfg.Profiles.Select(p => p.Adapter).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1;
@@ -136,20 +136,7 @@ public sealed class TrayApp : ApplicationContext
             { var none = Item("No profiles yet"); none.Enabled = false; _menu.Items.Add(none); }
 
         _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add(Item("Profiles and settings…", (_, _) => OpenEditor()));
-
-        var notify = Item("Pop up on IP change");
-        notify.Checked = _cfg.NotifyOnIpChange;
-        notify.Click += (_, _) => { _cfg.NotifyOnIpChange = !_cfg.NotifyOnIpChange; SaveQuietly(); };
-        _menu.Items.Add(notify);
-
-        var startup = Item("Start with Windows (no UAC prompts)");
-        startup.Checked = Startup.IsEnabled();
-        startup.Click += async (_, _) => await ToggleStartupAsync(!startup.Checked);
-        _menu.Items.Add(startup);
-
-        _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add(Item("Exit", (_, _) => ExitThread()));
+        _menu.Items.Add(Item("Settings…", (_, _) => OpenEditor()));
         _menu.ResumeLayout();
     }
 
@@ -172,7 +159,8 @@ public sealed class TrayApp : ApplicationContext
     void OpenEditor()
     {
         if (_editor is { IsDisposed: false }) { _editor.Activate(); return; }
-        _editor = new ProfilesForm(AppConfig.Load(), _icon.Icon ?? SystemIcons.Application);
+        _editor = new ProfilesForm(AppConfig.Load(), _icon.Icon ?? SystemIcons.Application, Startup.IsEnabled());
+        _editor.StartupToggle = ToggleStartupAsync;
         _editor.Saved += cfg => { _cfg = cfg; UpdateTooltip(); };
         _editor.TestPopup = c => Popup(c);
         _editor.Show();
@@ -225,7 +213,7 @@ public sealed class TrayApp : ApplicationContext
         }
     }
 
-    async Task ToggleStartupAsync(bool enable)
+    async Task<bool> ToggleStartupAsync(bool enable)
     {
         bool ok; string msg;
         if (Elevation.IsElevated)
@@ -237,7 +225,7 @@ public sealed class TrayApp : ApplicationContext
             var code = enable
                 ? await Elevation.RunElevatedAsync("--startup-on", CurrentUser(), "--config", _cfg.Path)
                 : await Elevation.RunElevatedAsync("--startup-off", "--config", _cfg.Path);
-            if (code == null) return;
+            if (code == null) return false;
             ok = code == 0;
             msg = ReadResult() ?? "";
         }
@@ -245,6 +233,7 @@ public sealed class TrayApp : ApplicationContext
         else if (enable)
             Popup(PopupBuilder.Info("Start with Windows is on",
                 "NetSwitch will start when you sign in, with admin rights, so switching profiles won't ask for permission."));
+        return ok;
     }
 
     static string CurrentUser() => $@"{Environment.UserDomainName}\{Environment.UserName}";

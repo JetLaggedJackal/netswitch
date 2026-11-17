@@ -7,6 +7,8 @@ public sealed class ProfilesForm : Form
 {
     public event Action<AppConfig>? Saved;
     public Action<PopupContent>? TestPopup;
+    /// <summary>Turns "Start with Windows" on/off right away (may show UAC); returns whether it worked.</summary>
+    public Func<bool, Task<bool>>? StartupToggle;
 
     readonly Theme _t = Theme.Current;
     readonly AppConfig _cfg;
@@ -27,7 +29,8 @@ public sealed class ProfilesForm : Form
     readonly TableLayoutPanel _ipGrid, _dnsGrid;
     readonly ModernButton _fill;
     // notifications
-    readonly ToggleSwitch _notifyOn, _sticky;
+    readonly ToggleSwitch _notifyOn, _sticky, _startup;
+    bool _startupBusy;
     readonly List<AdapterRow> _watchRows = new();
     // footer
     readonly Label _footerMsg;
@@ -35,7 +38,7 @@ public sealed class ProfilesForm : Form
     Profile? _current;
     bool _loading;
 
-    public ProfilesForm(AppConfig cfg, Icon icon)
+    public ProfilesForm(AppConfig cfg, Icon icon, bool startupEnabled = false)
     {
         _cfg = cfg;
         _profiles = cfg.Profiles.Select(p => p.Clone()).ToList();
@@ -46,18 +49,18 @@ public sealed class ProfilesForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         Text = "NetSwitch";
         Icon = icon;
-        Font = Theme.UiFont();
+        Font = Theme.UiFont(9f);
         BackColor = _t.Window;
         ForeColor = _t.Text;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(920, 740);
-        MinimumSize = new Size(780, 600);
+        ClientSize = new Size(820, 600);
+        MinimumSize = new Size(700, 520);
 
         // ---------- footer ----------
-        var footer = new Panel { Dock = DockStyle.Bottom, Height = 64, BackColor = _t.Window, Padding = new Padding(24, 14, 24, 14) };
+        var footer = new Panel { Dock = DockStyle.Bottom, Height = 52, BackColor = _t.Window, Padding = new Padding(20, 11, 20, 11) };
         footer.Paint += (_, e) => { using var p = new Pen(_t.Border); e.Graphics.DrawLine(p, 0, 0, footer.Width, 0); };
-        var save = new ModernButton(_t, "Save", primary: true) { Width = 110, Margin = new Padding(8, 0, 0, 0) };
-        var cancel = new ModernButton(_t, "Cancel") { Width = 110, Margin = new Padding(8, 0, 0, 0) };
+        var save = new ModernButton(_t, "Save", primary: true) { Width = 90, Margin = new Padding(8, 0, 0, 0) };
+        var cancel = new ModernButton(_t, "Cancel") { Width = 90, Margin = new Padding(8, 0, 0, 0) };
         save.Click += (_, _) => SaveAndClose();
         cancel.Click += (_, _) => Close();
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Right, FlowDirection = FlowDirection.RightToLeft, AutoSize = true, WrapContents = false, BackColor = _t.Window };
@@ -70,12 +73,7 @@ public sealed class ProfilesForm : Form
         AcceptButton = save; CancelButton = cancel;
 
         // ---------- sidebar ----------
-        var sidebar = new Panel { Dock = DockStyle.Left, Width = 270, BackColor = _t.Sidebar, Padding = new Padding(12, 18, 12, 12) };
-        var brand = new Panel { Dock = DockStyle.Top, Height = 58, BackColor = _t.Sidebar };
-        var logo = new PictureBox { Image = new Icon(icon, 32, 32).ToBitmap(), SizeMode = PictureBoxSizeMode.Zoom, Size = new Size(30, 30), Location = new Point(6, 4), BackColor = _t.Sidebar };
-        var appName = Ui.Label(_t, "NetSwitch", 13f, FontStyle.Bold); appName.Location = new Point(44, 0);
-        var appSub = Ui.Label(_t, "Network profiles", 9f, sub: true); appSub.Location = new Point(46, 26);
-        brand.Controls.AddRange(new Control[] { logo, appName, appSub });
+        var sidebar = new Panel { Dock = DockStyle.Left, Width = 220, BackColor = _t.Sidebar, Padding = new Padding(8, 10, 8, 8) };
 
         var profilesCaption = Ui.Label(_t, "PROFILES", 8.25f, FontStyle.Bold, sub: true);
         profilesCaption.AutoSize = false; profilesCaption.Dock = DockStyle.Top; profilesCaption.Height = 26;
@@ -86,22 +84,21 @@ public sealed class ProfilesForm : Form
         _list.BackColor = _t.Sidebar;
         _list.DrawMode = DrawMode.OwnerDrawFixed;
         _list.IntegralHeight = false;
-        _list.ItemHeight = 58;
+        _list.ItemHeight = 46;
         _list.DrawItem += DrawProfileItem;
         _list.SelectedIndexChanged += (_, _) => { if (!_loading) ShowProfile(_list.SelectedItem as Profile); };
         _list.MouseUp += (_, _) => { if (_list.SelectedItem is Profile p) ShowProfile(p); };
 
-        var add = new ModernButton(_t, "+  New profile") { Ghost = true, Dock = DockStyle.Bottom, Height = 36 };
+        var add = new ModernButton(_t, "+  New profile") { Ghost = true, Dock = DockStyle.Bottom, Height = 30 };
         add.Click += (_, _) => AddProfile();
 
-        _navNotify = new NavButton(_t, "", "Notifications") { Dock = DockStyle.Bottom, Height = 40 };
+        _navNotify = new NavButton(_t, "\uE713", "Settings") { Dock = DockStyle.Bottom, Height = 34 };
         _navNotify.Click += (_, _) => ShowNotifications();
         var sep = new Panel { Dock = DockStyle.Bottom, Height = 13, BackColor = _t.Sidebar };
         sep.Paint += (_, e) => { using var p = new Pen(_t.Border); e.Graphics.DrawLine(p, 6, 6, sep.Width - 6, 6); };
 
         sidebar.Controls.Add(_list);
         sidebar.Controls.Add(profilesCaption);
-        sidebar.Controls.Add(brand);
         sidebar.Controls.Add(add);
         sidebar.Controls.Add(sep);
         sidebar.Controls.Add(_navNotify);
@@ -112,14 +109,14 @@ public sealed class ProfilesForm : Form
         _list.BringToFront();
 
         // ---------- profile page ----------
-        _title = Ui.Label(_t, "", 17f, FontStyle.Bold);
-        _status = Ui.Label(_t, "", 9.25f, sub: true);
+        _title = Ui.Label(_t, "", 14f, FontStyle.Bold);
+        _status = Ui.Label(_t, "", 8.75f, sub: true);
         var dup = new ModernButton(_t, "Duplicate") { Ghost = true, Width = 96 };
         var del = new ModernButton(_t, "Delete") { Ghost = true, Width = 86 };
         dup.Click += (_, _) => DuplicateProfile();
         del.Click += (_, _) => RemoveProfile();
 
-        var header = new TableLayoutPanel { ColumnCount = 3, RowCount = 2, Dock = DockStyle.Top, AutoSize = true, Margin = new Padding(0, 0, 0, 14), BackColor = _t.Window };
+        var header = new TableLayoutPanel { ColumnCount = 3, RowCount = 2, Dock = DockStyle.Top, AutoSize = true, Margin = new Padding(0, 0, 0, 12), BackColor = _t.Window };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -134,9 +131,9 @@ public sealed class ProfilesForm : Form
         _adapter = new ModernCombo(_t) { Describe = o => (o.ToString()!, _snap.TryGetValue(o.ToString()!, out var a) ? a.AddressText : "not found") };
         var general = CardWith("General", Grid(2, Ui.Field(_t, "Profile name", _name), Ui.Field(_t, "Network adapter", _adapter)));
 
-        _ipMode = new SegmentedControl(_t, "Automatic (DHCP)", "Manual") { Width = 330, Margin = new Padding(0, 0, 0, 10) };
-        _ipHint = Ui.Label(_t, "Your router assigns the IP address, subnet mask and gateway.", 9f, sub: true);
-        _ipHint.Margin = new Padding(1, 0, 0, 8);
+        _ipMode = new SegmentedControl(_t, "Automatic (DHCP)", "Manual") { Margin = new Padding(0, 0, 0, 8) };
+        _ipHint = Ui.Label(_t, "Your router assigns the IP address, subnet mask and gateway.", 8.5f, sub: true);
+        _ipHint.Margin = new Padding(1, 0, 0, 4);
         _ip = new ModernTextBox(_t) { PlaceholderText = "192.168.1.50" };
         _mask = new ModernTextBox(_t) { PlaceholderText = "255.255.255.0 or 24" };
         _gw = new ModernTextBox(_t) { PlaceholderText = "Optional" };
@@ -145,9 +142,9 @@ public sealed class ProfilesForm : Form
         _ipGrid = Grid(2, Ui.Field(_t, "IP address", _ip), Ui.Field(_t, "Subnet mask", _mask), Ui.Field(_t, "Default gateway", _gw), _fill);
         var ipCard = CardWith("IP settings", _ipMode, _ipHint, _ipGrid);
 
-        _dnsMode = new SegmentedControl(_t, "Automatic", "Manual") { Width = 330, Margin = new Padding(0, 0, 0, 10) };
-        _dnsHint = Ui.Label(_t, "", 9f, sub: true);
-        _dnsHint.Margin = new Padding(1, 0, 0, 8);
+        _dnsMode = new SegmentedControl(_t, "Automatic", "Manual") { Margin = new Padding(0, 0, 0, 8) };
+        _dnsHint = Ui.Label(_t, "", 8.5f, sub: true);
+        _dnsHint.Margin = new Padding(1, 0, 0, 4);
         _dns1 = new ModernTextBox(_t) { PlaceholderText = "e.g. 1.1.1.1" };
         _dns2 = new ModernTextBox(_t) { PlaceholderText = "Optional" };
         _dnsGrid = Grid(2, Ui.Field(_t, "Preferred DNS", _dns1), Ui.Field(_t, "Alternate DNS", _dns2));
@@ -165,32 +162,41 @@ public sealed class ProfilesForm : Form
         _dns1.TextChanged += (_, _) => Edit(SetDns);
         _dns2.TextChanged += (_, _) => Edit(SetDns);
 
-        // ---------- notifications page ----------
-        var nTitle = Ui.Label(_t, "Notifications", 17f, FontStyle.Bold);
-        var nSub = Ui.Label(_t, "Choose when NetSwitch pops up and what it watches.", 9.25f, sub: true);
-        nSub.Margin = new Padding(0, 2, 0, 14);
-        _notifyOn = new ToggleSwitch(_t, "Pop up when an IP address changes") { Width = 420, Checked = cfg.NotifyOnIpChange, Margin = new Padding(0, 0, 0, 6) };
-        _sticky = new ToggleSwitch(_t, "Keep pop-ups open until I close them") { Width = 420, Checked = cfg.PopupStaysOpen, Margin = new Padding(0, 0, 0, 6) };
-        var test = new ModernButton(_t, "Show a test pop-up") { Width = 170, Margin = new Padding(0, 6, 0, 0) };
+        // ---------- settings page ----------
+        var nTitle = Ui.Label(_t, "Settings", 14f, FontStyle.Bold);
+        var nSub = Ui.Label(_t, "Startup, pop-ups, and which adapters NetSwitch shows and watches.", 8.75f, sub: true);
+        nSub.Margin = new Padding(0, 2, 0, 12);
+
+        _startup = new ToggleSwitch(_t, "Start with Windows") { Width = 420, Checked = startupEnabled, Margin = new Padding(0, 0, 0, 2) };
+        var startupHint = Ui.Label(_t, "Starts at sign-in with admin rights, so switching never asks for permission.", 8.5f, sub: true);
+        startupHint.MaximumSize = new Size(560, 0);
+        startupHint.Margin = new Padding(52, 0, 0, 4);
+        _startup.CheckedChanged += async (_, _) => await OnStartupToggled();
+        var startupCard = CardWith("Startup", _startup, startupHint);
+
+        _notifyOn = new ToggleSwitch(_t, "Pop up when an IP address changes") { Width = 420, Checked = cfg.NotifyOnIpChange, Margin = new Padding(0, 0, 0, 2) };
+        _sticky = new ToggleSwitch(_t, "Keep pop-ups open until I close them") { Width = 420, Checked = cfg.PopupStaysOpen, Margin = new Padding(0, 0, 0, 2) };
+        var test = new ModernButton(_t, "Show a test pop-up") { Width = 150, Margin = new Padding(0, 6, 0, 0) };
         test.Click += (_, _) => ShowTestPopup();
         var behaviour = CardWith("Pop-ups", _notifyOn, _sticky, test);
 
-        var rows = new List<Control>();
-        var names = _snap.Keys.Concat(cfg.WatchAdapters).Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderByDescending(n => _snap.TryGetValue(n, out var a) && a.IsUp).ThenBy(n => n);
-        foreach (var n in names)
+        var rows = new List<Control> { new AdapterHeader(_t) { Dock = DockStyle.Top } };
+        var known = NetInfo.Ordered(_snap.Values).Select(a => a.Name)
+            .Concat(cfg.WatchAdapters).Concat(cfg.HiddenAdapters).Distinct(StringComparer.OrdinalIgnoreCase);
+        foreach (var n in known)
         {
             _snap.TryGetValue(n, out var a);
-            var row = new AdapterRow(_t, n, a == null ? "Not present right now" : $"{a.Description} · {a.AddressText}", cfg.IsWatched(n))
-            { Dock = DockStyle.Top, Margin = new Padding(0, 0, 0, 2) };
+            var detail = a == null ? "Not present right now" : $"{a.AddressText} · {a.Description}";
+            var row = new AdapterRow(_t, n, detail, showInMenu: !cfg.IsHidden(n), watched: cfg.IsWatched(n))
+            { Dock = DockStyle.Top, Margin = new Padding(0) };
             _watchRows.Add(row);
             rows.Add(row);
         }
-        var watch = CardWith("Watch these adapters", rows.ToArray());
-        BuildPage(_notifyPage, nTitle, nSub, behaviour, watch);
+        var watch = CardWith("Adapters", rows.ToArray());
+        BuildPage(_notifyPage, nTitle, nSub, startupCard, behaviour, watch);
 
         // ---------- empty state ----------
-        var emptyTitle = Ui.Label(_t, "No profiles yet", 17f, FontStyle.Bold);
+        var emptyTitle = Ui.Label(_t, "No profiles yet", 14f, FontStyle.Bold);
         var emptySub = Ui.Label(_t, "Create one for each way you connect, for example \"Office (fixed IP)\" and \"Home (DHCP)\".", 9.5f, sub: true);
         emptySub.Margin = new Padding(0, 4, 0, 16);
         var emptyAdd = new ModernButton(_t, "+  New profile", primary: true) { Width = 150 };
@@ -222,21 +228,21 @@ public sealed class ProfilesForm : Form
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
-        _list.ItemHeight = LogicalToDeviceUnits(58);
+        _list.ItemHeight = LogicalToDeviceUnits(46);
     }
 
     // ---------- building blocks ----------
 
     Card CardWith(string title, params Control[] children)
     {
-        var card = new Card(_t) { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(0, 0, 0, 14) };
-        var stack = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true, BackColor = _t.Surface };
-        var h = Ui.Label(_t, title, 10.5f, FontStyle.Bold);
-        h.Margin = new Padding(0, 0, 0, 10);
+        var card = new Card(_t) { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(0, 0, 0, 16) };
+        var stack = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true, BackColor = _t.Panel };
+        var h = Ui.Label(_t, title.ToUpperInvariant(), 8.25f, FontStyle.Bold, sub: true);
+        h.Margin = new Padding(0, 0, 0, 6);
         stack.Controls.Add(h);
         foreach (var c in children)
         {
-            if (c is TableLayoutPanel or AdapterRow) c.Dock = DockStyle.Top;
+            if (c is TableLayoutPanel or AdapterRow or AdapterHeader) c.Dock = DockStyle.Fill;
             stack.Controls.Add(c);
         }
         stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -246,7 +252,7 @@ public sealed class ProfilesForm : Form
 
     TableLayoutPanel Grid(int cols, params Control[] cells)
     {
-        var g = new TableLayoutPanel { ColumnCount = cols, AutoSize = true, Dock = DockStyle.Top, BackColor = _t.Surface, Margin = new Padding(0) };
+        var g = new TableLayoutPanel { ColumnCount = cols, AutoSize = true, Dock = DockStyle.Top, BackColor = _t.Panel, Margin = new Padding(0) };
         for (int i = 0; i < cols; i++) g.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / cols));
         foreach (var c in cells) g.Controls.Add(c);
         return g;
@@ -257,7 +263,7 @@ public sealed class ProfilesForm : Form
         page.Dock = DockStyle.Fill;
         page.AutoScroll = true;
         page.BackColor = _t.Window;
-        page.Padding = new Padding(28, 22, 28, 10);
+        page.Padding = new Padding(24, 14, 20, 8);
         var stack = new TableLayoutPanel { ColumnCount = 1, Dock = DockStyle.Top, AutoSize = true, BackColor = _t.Window };
         stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         foreach (var b in blocks)
@@ -302,8 +308,8 @@ public sealed class ProfilesForm : Form
         _snap.TryGetValue(p.Adapter, out var a);
         bool active = NetInfo.Matches(p, a);
         int pad = LogicalToDeviceUnits(14);
-        using var bold = Theme.UiFont(9.75f, FontStyle.Bold);
-        using var small = Theme.UiFont(8.75f);
+        using var bold = Theme.UiFont(9f, FontStyle.Bold);
+        using var small = Theme.UiFont(8.25f);
         int lineH = TextRenderer.MeasureText("Ag", bold).Height;
         int top = r.Y + (r.Height - lineH * 2) / 2;
         int textW = r.Width - pad * 2 - (active ? LogicalToDeviceUnits(54) : 0);
@@ -344,7 +350,7 @@ public sealed class ProfilesForm : Form
         }
         _loading = true;
         _adapter.Items.Clear();
-        foreach (var n in _snap.Values.OrderByDescending(a => a.IsUp).ThenBy(a => a.Name).Select(a => a.Name)) _adapter.Items.Add(n);
+        foreach (var n in NetInfo.Ordered(_snap.Values).Select(a => a.Name)) _adapter.Items.Add(n);
         if (!string.IsNullOrEmpty(p.Adapter) && !_adapter.Items.Contains(p.Adapter)) _adapter.Items.Add(p.Adapter);
         _adapter.SelectedItem = p.Adapter;
 
@@ -412,8 +418,7 @@ public sealed class ProfilesForm : Form
 
     void AddProfile()
     {
-        var adapter = _current?.Adapter
-            ?? _snap.Values.Where(a => a.IsUp && a.Addresses.Count > 0).OrderByDescending(a => a.Gateways.Count).FirstOrDefault()?.Name ?? "";
+        var adapter = _current?.Adapter ?? NetInfo.Primary(_snap.Values)?.Name ?? "";
         var p = new Profile { Name = UniqueName("New profile"), Adapter = adapter, Dhcp = false };
         AddAndSelect(p);
         _name.Focus();
@@ -474,6 +479,18 @@ public sealed class ProfilesForm : Form
         _dns2.Text = a.Dns.ElementAtOrDefault(1) ?? "";
     }
 
+    async Task OnStartupToggled()
+    {
+        if (_startupBusy || StartupToggle == null) return;
+        _startupBusy = true;
+        var want = _startup.Checked;
+        bool ok = false;
+        try { ok = await StartupToggle(want); }
+        catch { }
+        if (!ok) _startup.Checked = !want; // UAC cancelled or failed: put the switch back
+        _startupBusy = false;
+    }
+
     void ShowNotifications()
     {
         ShowPage(_notifyPage);
@@ -481,7 +498,7 @@ public sealed class ProfilesForm : Form
 
     void ShowTestPopup()
     {
-        var a = _snap.Values.Where(x => x.IsUp && x.Addresses.Count > 0).OrderByDescending(x => x.Gateways.Count).FirstOrDefault();
+        var a = NetInfo.Primary(_snap.Values);
         if (a == null) return;
         var before = a with { Addresses = new List<(string, string)> { ("192.0.2.10", "255.255.255.0") } };
         TestPopup?.Invoke(PopupBuilder.Change(a.Name, before, a, _profiles, _sticky.Checked));
@@ -498,7 +515,8 @@ public sealed class ProfilesForm : Form
         if (dup != null) { Fail($"Two profiles are named \"{dup.Key}\". Names must be unique.", dup.Last()); return; }
 
         _cfg.Profiles = _profiles.Select(p => p.Clone()).ToList();
-        _cfg.WatchAdapters = _watchRows.Where(r => r.Checked).Select(r => r.AdapterName).ToList();
+        _cfg.WatchAdapters = _watchRows.Where(r => r.Watched).Select(r => r.AdapterName).ToList();
+        _cfg.HiddenAdapters = _watchRows.Where(r => !r.ShowInMenu).Select(r => r.AdapterName).ToList();
         _cfg.NotifyOnIpChange = _notifyOn.Checked;
         _cfg.PopupStaysOpen = _sticky.Checked;
         try { _cfg.Save(); }
@@ -570,35 +588,76 @@ public sealed class NavButton : Control
     }
 }
 
-/// <summary>Adapter name + details with a toggle on the right.</summary>
-public sealed class AdapterRow : Control
+static class AdapterColumns
+{
+    public const int Width = 120; // logical px per toggle column
+}
+
+/// <summary>Column captions above the adapter rows.</summary>
+public sealed class AdapterHeader : Control
 {
     readonly Theme _t;
-    readonly ToggleSwitch _toggle;
-    readonly string _detail;
-    public string AdapterName { get; }
-    public bool Checked => _toggle.Checked;
-    public AdapterRow(Theme t, string name, string detail, bool on)
+    public AdapterHeader(Theme t)
     {
-        _t = t; AdapterName = name; _detail = detail;
+        _t = t;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
-        BackColor = t.Surface;
-        Height = 50;
-        _toggle = new ToggleSwitch(t, "") { Checked = on, Width = 46, Dock = DockStyle.Right, BackColor = t.Surface };
-        Controls.Add(_toggle);
-        Click += (_, _) => _toggle.Checked = !_toggle.Checked;
-        Cursor = Cursors.Hand;
+        BackColor = t.Panel;
+        Height = 22;
     }
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.Clear(_t.Surface);
-        using var bold = Theme.UiFont(9.75f, FontStyle.Bold);
-        using var small = Theme.UiFont(8.75f);
+        g.Clear(_t.Panel);
+        using var f = Theme.UiFont(8.25f);
+        int col = LogicalToDeviceUnits(AdapterColumns.Width);
+        var flags = TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter;
+        TextRenderer.DrawText(g, "Show in menu", f, new Rectangle(Width - col * 2, 0, col, Height), _t.SubText, flags);
+        TextRenderer.DrawText(g, "Pop up on change", f, new Rectangle(Width - col, 0, col, Height), _t.SubText, flags);
+        TextRenderer.DrawText(g, "Adapter", f, new Rectangle(0, 0, Width - col * 2, Height), _t.SubText, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPadding);
+    }
+}
+
+/// <summary>Adapter name + details, with "show in menu" and "pop up on change" switches.</summary>
+public sealed class AdapterRow : Control
+{
+    readonly Theme _t;
+    readonly ToggleSwitch _menu, _watch;
+    readonly Panel _menuCol, _watchCol;
+    readonly string _detail;
+    public string AdapterName { get; }
+    public bool ShowInMenu => _menu.Checked;
+    public bool Watched => _watch.Checked;
+    public AdapterRow(Theme t, string name, string detail, bool showInMenu, bool watched)
+    {
+        _t = t; AdapterName = name; _detail = detail;
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        BackColor = t.Panel;
+        Height = 42;
+        (_watchCol, _watch) = Column(watched);
+        (_menuCol, _menu) = Column(showInMenu);
+        Controls.Add(_menuCol);
+        Controls.Add(_watchCol);
+    }
+    (Panel, ToggleSwitch) Column(bool on)
+    {
+        var col = new Panel { Dock = DockStyle.Right, Width = AdapterColumns.Width, BackColor = _t.Panel };
+        var sw = new ToggleSwitch(_t, "") { Checked = on, Size = new Size(44, 26), BackColor = _t.Panel };
+        col.Controls.Add(sw);
+        col.Resize += (_, _) => sw.Location = new Point((col.Width - sw.Width) / 2, (col.Height - sw.Height) / 2);
+        return (col, sw);
+    }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.Clear(_t.Panel);
+        using var bold = Theme.UiFont(9f, FontStyle.Bold);
+        using var small = Theme.UiFont(8.25f);
         int lh = TextRenderer.MeasureText("Ag", bold).Height;
         int top = (Height - lh * 2) / 2;
-        int w = Width - _toggle.Width - 12;
+        int w = Width - _menuCol.Width - _watchCol.Width - 8;
         TextRenderer.DrawText(g, AdapterName, bold, new Rectangle(0, top, w, lh), _t.Text, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         TextRenderer.DrawText(g, _detail, small, new Rectangle(0, top + lh, w, lh), _t.SubText, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        using var p = new Pen(_t.Border);
+        g.DrawLine(p, 0, 0, Width, 0);
     }
 }
