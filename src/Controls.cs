@@ -119,11 +119,13 @@ public class ModernButton : Button
     // Never narrower than its text, whatever the DPI.
     protected override void SetBoundsCore(int x, int y, int width, int height, BoundsSpecified specified)
     {
-        if (!string.IsNullOrEmpty(Text) && IsHandleCreated | Parent != null)
+        // Only once the handle exists: before that, DPI scaling hasn't happened and would double the result.
+        if (!string.IsNullOrEmpty(Text) && IsHandleCreated)
             width = Math.Max(width, TextRenderer.MeasureText(Text, Font).Width + LogicalToDeviceUnits(28));
         base.SetBoundsCore(x, y, width, height, specified);
     }
     protected override void OnTextChanged(EventArgs e) { base.OnTextChanged(e); Width = Width; Invalidate(); }
+    protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Width = Width; }
     protected override void OnDpiChangedAfterParent(EventArgs e) { base.OnDpiChangedAfterParent(e); Width = Width; }
     public override Size GetPreferredSize(Size proposed)
     {
@@ -268,7 +270,7 @@ public class ToggleSwitch : Control
     int MinWidth => string.IsNullOrEmpty(Text) ? 0
         : LogicalToDeviceUnits(56) + TextRenderer.MeasureText(Text, Font).Width + LogicalToDeviceUnits(8);
     protected override void SetBoundsCore(int x, int y, int width, int height, BoundsSpecified specified)
-        => base.SetBoundsCore(x, y, Math.Max(width, MinWidth), height, specified);
+        => base.SetBoundsCore(x, y, IsHandleCreated ? Math.Max(width, MinWidth) : width, height, specified);
     protected override void OnDpiChangedAfterParent(EventArgs e) { base.OnDpiChangedAfterParent(e); Width = Width; }
 
     protected override void OnPaint(PaintEventArgs e)

@@ -46,6 +46,20 @@ static class Preview
                 oh.Shown += (_, _) => PopupForm.Show(PopupBuilder.Overview(fake, cfg.Profiles, _ => new List<PopupAction> { new("Set static IP…"), PopupAction.Separator }), 600);
                 Application.Run(oh);
                 break;
+            case "icons":
+                var iform = new Form { BackColor = Color.FromArgb(32, 32, 32), ClientSize = new Size(300, 120), Text = "icons" };
+                int ix = 10;
+                foreach (var ic0 in new[] { Color.FromArgb(0, 0x67, 0xC0), Color.FromArgb(0xE0, 0x9B, 0x1A), Color.FromArgb(0xD1, 0x34, 0x38) })
+                {
+                    foreach (var sz in new[] { 16, 32 })
+                    {
+                        var ic = TrayApp.DrawStatusIcon(ic0, sz);
+                        iform.Controls.Add(new PictureBox { Image = ic.ToBitmap(), Location = new Point(ix, 10), Size = new Size(sz, sz) });
+                        ix += sz + 10;
+                    }
+                }
+                Application.Run(iform);
+                break;
             case "quick":
                 var qa = new AdapterInfo("Wi-Fi", "MediaTek Wi-Fi 6 MT7921", true, true, new List<(string, string)> { ("192.168.1.73", "255.255.255.0") }, new List<string> { "192.168.1.1" }, new List<string> { "192.168.1.1" });
                 Application.Run(new QuickIpForm(qa));

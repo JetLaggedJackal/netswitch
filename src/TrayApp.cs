@@ -41,8 +41,9 @@ public sealed class TrayApp : ApplicationContext
         // Left click: profile menu (pick one to switch). Right click: adapter overview pop-up.
         _icon.MouseUp += (_, e) =>
         {
-            if (e.Button == MouseButtons.Left) ShowProfileMenu();
-            else if (e.Button == MouseButtons.Right) ToggleOverview();
+            if (e.Button is not (MouseButtons.Left or MouseButtons.Right)) return;
+            bool left = e.Button == MouseButtons.Left;
+            if (left != _cfg.SwapClicks) ShowProfileMenu(); else ToggleOverview();
         };
         _menu.Closed += (_, _) => _icon.ContextMenuStrip = null;
         PopupForm.OpenProfilesRequested = OpenEditor;
@@ -262,11 +263,22 @@ public sealed class TrayApp : ApplicationContext
         return list;
     }
 
+    QuickIpForm? _quick;
+
     void QuickStatic(AdapterInfo a)
     {
         _panel?.Dismiss();
-        using var f = new QuickIpForm(a);
-        if (f.ShowDialog() == DialogResult.OK && f.Result is { } p) _ = ApplyQuickAsync(p);
+        if (_quick is { IsDisposed: false }) { _quick.Activate(); return; }
+        // Modeless, so nothing else (pop-ups closing, timers) runs inside a nested message loop.
+        var f = _quick = new QuickIpForm(a);
+        f.FormClosed += (_, _) =>
+        {
+            if (f.DialogResult == DialogResult.OK && f.Result is { } p) _ = ApplyQuickAsync(p);
+            _quick = null;
+
+        };
+        f.Show();
+        f.Activate();
     }
 
     // ---------------- safe return to the previous settings ----------------
@@ -303,7 +315,7 @@ public sealed class TrayApp : ApplicationContext
     {
         _safeTimer?.Dispose();
         _safePopup?.Dismiss();
-        int left = Math.Max(10, _cfg.SafeSwitchSeconds);
+        int left = Math.Clamp(_cfg.SafeSwitchSeconds, 10, 600);
         bool kept = false;
         _safePopup = PopupForm.Show(new PopupContent
         {
@@ -311,7 +323,7 @@ public sealed class TrayApp : ApplicationContext
             Title = $"Keep \"{applied.Name}\"?",
             Heading = applied.Adapter,
             Big = applied.Dhcp ? "Automatic (DHCP)" : IpUtil.SplitIp(applied.Ip).ip,
-            Message = $"Safe switching is on. NetSwitch goes back to {NetInfo.Describe(previous)} in {left} seconds unless you click Keep.",
+            Message = $"Safe switching is on. NetSwitch goes back to {NetInfo.Describe(previous)} in {(left % 60 == 0 ? $"{left / 60} min" : $"{left} seconds")} unless you click Keep.",
             ActionText = "Keep",
             Action = () => { kept = true; _safeTimer?.Stop(); },
             Sticky = true,
@@ -545,35 +557,53 @@ public sealed class TrayApp : ApplicationContext
         finally { _statusBusy = false; }
     }
 
+    /// <summary>Whole tray icon in a status colour: blue = online, amber = DNS not resolving, red = no internet.</summary>
     void SetTrayIcon(NetHealth? health)
     {
         if (_baseIcon == null) return;
         if (health == null) { _icon.Icon = _baseIcon; return; }
+        bool dnsFails = _netStatus?.Detail.Contains("DNS fails") == true;
         var color = health switch
         {
-            NetHealth.Online => Color.FromArgb(0x2E, 0xA0, 0x43),
-            NetHealth.Limited => Color.FromArgb(0xE0, 0x9B, 0x1A),
-            _ => Color.FromArgb(0xD1, 0x34, 0x38),
+            NetHealth.Offline => Color.FromArgb(0xD1, 0x34, 0x38),      // red
+            _ when dnsFails => Color.FromArgb(0xE0, 0x9B, 0x1A),         // amber
+            _ => Color.FromArgb(0x00, 0x67, 0xC0),                       // blue
         };
-        var size = SystemInformation.SmallIconSize;
-        using var bmp = new Bitmap(size.Width, size.Height);
-        using (var g = Graphics.FromImage(bmp))
-        {
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-            g.DrawIcon(_baseIcon, new Rectangle(Point.Empty, size));
-            float d = size.Width * 0.5f, ring = Math.Max(1f, size.Width / 16f);
-            var r = new RectangleF(size.Width - d, size.Height - d, d, d);
-            using (var bg = new SolidBrush(Theme.Current.Dark ? Color.FromArgb(32, 32, 32) : Color.White))
-                g.FillEllipse(bg, RectangleF.Inflate(r, ring, ring));
-            using var b = new SolidBrush(color);
-            g.FillEllipse(b, r);
-        }
-        var h = bmp.GetHicon();
-        var icon = (Icon)Icon.FromHandle(h).Clone();
-        DestroyIcon(h);
+        var icon = DrawStatusIcon(color, SystemInformation.SmallIconSize.Width);
         _icon.Icon = icon;
         _statusIcon?.Dispose();
         _statusIcon = icon;
+    }
+
+    /// <summary>Rounded tile with two swap arrows, like the app icon, in any colour.</summary>
+    internal static Icon DrawStatusIcon(Color color, int size)
+    {
+        using var bmp = new Bitmap(size, size);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.Clear(Color.Transparent);
+            float s = size;
+            using (var path = Theme.RoundRect(new RectangleF(0.5f, 0.5f, s - 1.5f, s - 1.5f), s * 0.22f))
+            using (var b = new SolidBrush(color)) g.FillPath(b, path);
+            using var pen = new Pen(Color.White, Math.Max(1.5f, s * 0.1f))
+            {
+                StartCap = System.Drawing.Drawing2D.LineCap.Round,
+                EndCap = System.Drawing.Drawing2D.LineCap.Round,
+                LineJoin = System.Drawing.Drawing2D.LineJoin.Round,
+            };
+            float l = s * 0.24f, r = s * 0.76f, h = s * 0.13f;
+            float y1 = s * 0.36f, y2 = s * 0.64f;
+            // Top arrow pointing right, bottom arrow pointing left.
+            g.DrawLine(pen, l, y1, r, y1);
+            g.DrawLines(pen, new[] { new PointF(r - h, y1 - h), new PointF(r, y1), new PointF(r - h, y1 + h) });
+            g.DrawLine(pen, l, y2, r, y2);
+            g.DrawLines(pen, new[] { new PointF(l + h, y2 - h), new PointF(l, y2), new PointF(l + h, y2 + h) });
+        }
+        var hIcon = bmp.GetHicon();
+        var icon = (Icon)Icon.FromHandle(hIcon).Clone();
+        DestroyIcon(hIcon);
+        return icon;
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr h);

@@ -67,6 +67,8 @@ public sealed class AppConfig
     public bool Hotkeys { get; set; } = true;
     /// <summary>Colour the tray icon by internet status.</summary>
     public bool TrayStatus { get; set; } = true;
+    /// <summary>Swap the tray clicks: left = adapter overview, right = profile list.</summary>
+    public bool SwapClicks { get; set; }
 
     [JsonIgnore] public string Path { get; private set; } = DefaultPath;
 

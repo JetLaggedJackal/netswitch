@@ -40,6 +40,10 @@ public sealed class ProfilesForm : Form
     bool _startupBusy;
     ToggleSwitch _hotkeys = null!, _trayStatus = null!, _autoConnect = null!;
     ModernTextBox _autoSsid = null!;
+    ToggleSwitch _swapClicks = null!;
+    SegmentedControl _safeTimes = null!;
+    static readonly int[] SafeTimes = { 15, 30, 60, 120, 300 };
+    static readonly string[] SafeTimeLabels = { "15 s", "30 s", "1 min", "2 min", "5 min" };
     ToggleSwitch _safe = null!;
     readonly List<AdapterRow> _watchRows = new();
     // footer
@@ -230,12 +234,18 @@ public sealed class ProfilesForm : Form
         var behaviour = CardWith("Pop-ups", _notifyOn, _sticky, test);
 
         _safe = new ToggleSwitch(_t, "Safe switching") { Width = 420, Checked = cfg.SafeSwitch, Margin = new Padding(0, 0, 0, 2) };
-        var safeHint = Ui.Label(_t, $"After each switch, NetSwitch asks you to keep the new settings and goes back to the previous ones by itself after {cfg.SafeSwitchSeconds} seconds, e.g. when the change cut you off. Undo and \"Return to previous settings\" are always available.", 8.5f, sub: true);
+        var safeHint = Ui.Label(_t, "Asks to keep new settings after each switch, and goes back by itself if you don't answer.", 8.5f, sub: true);
         safeHint.MaximumSize = new Size(560, 0);
-        safeHint.Margin = new Padding(52, 0, 0, 4);
-        _hotkeys = new ToggleSwitch(_t, "Hotkeys: Ctrl+Alt+1–9 switch to profile 1–9, Ctrl+Alt+0 goes back") { Width = 520, Checked = cfg.Hotkeys, Margin = new Padding(0, 6, 0, 2) };
-        _trayStatus = new ToggleSwitch(_t, "Show internet status on the tray icon (green, amber, red dot)") { Width = 520, Checked = cfg.TrayStatus, Margin = new Padding(0, 0, 0, 2) };
-        var switching = CardWith("Switching", _safe, safeHint, _hotkeys, _trayStatus);
+        safeHint.Margin = new Padding(52, 0, 0, 6);
+        _safeTimes = new SegmentedControl(_t, SafeTimeLabels) { Margin = new Padding(52, 0, 0, 8) };
+        int ti = Array.IndexOf(SafeTimes, cfg.SafeSwitchSeconds);
+        _safeTimes.SelectedIndex = ti >= 0 ? ti : 1;
+        var safeTimeLabel = Ui.Label(_t, "Go back after", 8.5f, sub: true);
+        safeTimeLabel.Margin = new Padding(52, 2, 0, 3);
+        _hotkeys = new ToggleSwitch(_t, "Hotkeys: Ctrl+Alt+1–9 switch profiles, Ctrl+Alt+0 goes back") { Width = 420, Checked = cfg.Hotkeys, Margin = new Padding(0, 6, 0, 2) };
+        _trayStatus = new ToggleSwitch(_t, "Tray icon colour: blue online, amber DNS failing, red offline") { Width = 420, Checked = cfg.TrayStatus, Margin = new Padding(0, 0, 0, 2) };
+        _swapClicks = new ToggleSwitch(_t, "Swap tray clicks (left: adapters, right: profiles)") { Width = 420, Checked = cfg.SwapClicks, Margin = new Padding(0, 0, 0, 2) };
+        var switching = CardWith("Switching", _safe, safeHint, safeTimeLabel, _safeTimes, _hotkeys, _trayStatus, _swapClicks);
 
         var export = new ModernButton(_t, "Export profiles…") { Width = 170, Margin = new Padding(0, 0, 10, 0) };
         var import = new ModernButton(_t, "Import profiles…") { Width = 170, Margin = new Padding(0) };
@@ -730,6 +740,8 @@ public sealed class ProfilesForm : Form
         _cfg.PopupStaysOpen = _sticky.Checked;
         _cfg.AutoCheckUpdates = _autoUpdate.Checked;
         _cfg.SafeSwitch = _safe.Checked;
+        _cfg.SafeSwitchSeconds = SafeTimes[Math.Clamp(_safeTimes.SelectedIndex, 0, SafeTimes.Length - 1)];
+        _cfg.SwapClicks = _swapClicks.Checked;
         _cfg.Hotkeys = _hotkeys.Checked;
         _cfg.TrayStatus = _trayStatus.Checked;
         // Keep what the tray app recorded while this window was open.

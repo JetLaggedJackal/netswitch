@@ -284,7 +284,10 @@ public sealed class PopupForm : Form
     {
         Open.Remove(this);
         Restack();
-        _life.Dispose(); _fade.Dispose(); _outside.Dispose(); _toolsMenu?.Dispose(); _netTimer.Dispose(); _actTimer.Dispose();
+        _life.Dispose(); _fade.Dispose(); _outside.Dispose();
+        // Dispose the menu later: we may be closing from inside one of its click handlers.
+        var menu = _toolsMenu; _toolsMenu = null;
+        if (menu != null) { var ctx = SynchronizationContext.Current; if (ctx != null) ctx.Post(_ => menu.Dispose(), null); else menu.Dispose(); } _netTimer.Dispose(); _actTimer.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -545,7 +548,9 @@ public sealed class PopupForm : Form
         {
             if (a.Text == null) { m.Items.Add(new ToolStripSeparator()); continue; }
             var run = a.Run;
-            m.Items.Add(new ToolStripMenuItem(a.Text, null, (_, _) => run?.Invoke())
+            // Run after the menu has closed and returned: the action may close this pop-up (and its menu) or open a dialog.
+            var ctx = SynchronizationContext.Current;
+            m.Items.Add(new ToolStripMenuItem(a.Text, null, (_, _) => { if (run != null) { if (ctx != null) ctx.Post(_ => run(), null); else run(); } })
             { Padding = new Padding(4, 5, 4, 5), ShortcutKeyDisplayString = a.Detail, ShowShortcutKeys = a.Detail.Length > 0, Enabled = run != null });
         }
         m.Show(this, at);
