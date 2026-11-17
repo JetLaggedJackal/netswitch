@@ -47,7 +47,7 @@ public sealed record PopupEntry(string Name, string Line, string? Copy, bool Up,
 
 public sealed record PopupAction(string? Text, string Detail = "", Action? Run = null)
 {
-    public static readonly PopupAction Separator = new(null);
+    public static readonly PopupAction Separator = new((string?)null);
 }
 
 /// <summary>Custom notification window: bottom-right, no focus stealing, stacks, rich content.</summary>

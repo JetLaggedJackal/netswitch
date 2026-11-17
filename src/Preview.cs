@@ -43,7 +43,7 @@ static class Preview
                     new("Ethernet 5", "Cisco AnyConnect", false, true, new List<(string, string)>(), new List<string>(), new List<string>()),
                 };
                 var oh = new Form { ShowInTaskbar = false, Opacity = 0, Size = new Size(1, 1) };
-                oh.Shown += (_, _) => PopupForm.Show(PopupBuilder.Overview(fake, cfg.Profiles), 600);
+                oh.Shown += (_, _) => PopupForm.Show(PopupBuilder.Overview(fake, cfg.Profiles, _ => new List<PopupAction> { new("Set static IP…"), PopupAction.Separator }), 600);
                 Application.Run(oh);
                 break;
             case "quick":
