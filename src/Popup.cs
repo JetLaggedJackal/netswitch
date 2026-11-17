@@ -23,6 +23,10 @@ public sealed class PopupContent
     public List<PopupEntry> Entries { get; init; } = new();
     public bool ShowExit { get; init; }
     public bool CloseOnOutsideClick { get; init; }
+    /// <summary>Show a live internet check (pings + DNS) above the entries.</summary>
+    public bool LiveInternet { get; init; }
+    /// <summary>Entry dots blink with each adapter's traffic.</summary>
+    public bool LiveActivity { get; init; }
     /// <summary>Optional main button (replaces "Copy IP").</summary>
     public string? ActionText { get; init; }
     public Action? Action { get; init; }
@@ -50,6 +54,14 @@ public sealed class PopupForm : Form
     readonly List<Rectangle> _entryRects = new();
     int _hoverEntry = -1, _copiedEntry = -1, _hoverGw = -1;
     readonly Dictionary<int, Rectangle> _gwRects = new();
+    // live internet status and activity lights
+    NetCheckResult _net = new(NetHealth.Checking, "Checking internet…", "Pinging 1.1.1.1 and 8.8.8.8, resolving DNS");
+    Rectangle _netRect;
+    readonly System.Windows.Forms.Timer _netTimer = new() { Interval = 4000 };
+    readonly System.Windows.Forms.Timer _actTimer = new() { Interval = 180 };
+    Dictionary<string, long> _lastBytes = new();
+    readonly HashSet<int> _blinkOn = new();
+    bool _netBusy, _actBusy;
     ContextMenuStrip? _toolsMenu;
     public static Action<string, string>? ToolRequested; // (tool, ip)
 
@@ -170,6 +182,56 @@ public sealed class PopupForm : Form
         _fade.Start();
         if (!_c.Sticky) _life.Start();
         if (_c.CloseOnOutsideClick) _outside.Start();
+        if (_c.LiveInternet)
+        {
+            _netTimer.Tick += async (_, _) => await RefreshInternet();
+            _netTimer.Start();
+            _ = RefreshInternet();
+        }
+        if (_c.LiveActivity)
+        {
+            _actTimer.Tick += async (_, _) => await RefreshActivity();
+            _actTimer.Start();
+        }
+    }
+
+    async Task RefreshInternet()
+    {
+        if (_netBusy || IsDisposed) return;
+        _netBusy = true;
+        try
+        {
+            var r = await Task.Run(NetCheck.RunAsync);
+            if (IsDisposed) return;
+            _net = r;
+            Invalidate(_netRect);
+        }
+        catch { }
+        finally { _netBusy = false; }
+    }
+
+    async Task RefreshActivity()
+    {
+        if (_actBusy || IsDisposed) return;
+        _actBusy = true;
+        try
+        {
+            var now = await Task.Run(NetCheck.ByteCounters);
+            if (IsDisposed) return;
+            bool changed = false;
+            for (int i = 0; i < _c.Entries.Count; i++)
+            {
+                var name = _c.Entries[i].Name;
+                bool busy = now.TryGetValue(name, out var b) && _lastBytes.TryGetValue(name, out var was) && b != was;
+                // Blink like a port LED: alternate while traffic flows, stay steady when idle.
+                bool on = busy && !_blinkOn.Contains(i);
+                if (on ? _blinkOn.Add(i) : _blinkOn.Remove(i)) changed = true;
+            }
+            _lastBytes = now;
+            if (changed) Invalidate();
+        }
+        catch { }
+        finally { _actBusy = false; }
     }
 
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
@@ -215,7 +277,7 @@ public sealed class PopupForm : Form
     {
         Open.Remove(this);
         Restack();
-        _life.Dispose(); _fade.Dispose(); _outside.Dispose(); _toolsMenu?.Dispose();
+        _life.Dispose(); _fade.Dispose(); _outside.Dispose(); _toolsMenu?.Dispose(); _netTimer.Dispose(); _actTimer.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -238,6 +300,13 @@ public sealed class PopupForm : Form
         {
             y += Px(14);
             foreach (var (_, v) in _c.Rows) y += Measure(g, v, _fBody, width - LabelWidth()).Height + Px(5);
+        }
+        if (_c.LiveInternet)
+        {
+            y += Px(10);
+            int nh = TextRenderer.MeasureText("Ag", _fHeading).Height + TextRenderer.MeasureText("Ag", _fSub).Height + Px(14);
+            _netRect = new Rectangle(Pad - Px(8), y, width - Pad * 2 + Px(16), nh);
+            y += nh;
         }
         _entryRects.Clear();
         if (_c.Entries.Count > 0)
@@ -363,6 +432,25 @@ public sealed class PopupForm : Form
                 y += h + Px(5);
             }
         }
+        if (_c.LiveInternet)
+        {
+            var r = _netRect;
+            using (var bg = new SolidBrush(_t.SurfaceHover)) using (var bp = Theme.RoundRect(r, Px(6))) g.FillPath(bg, bp);
+            var col = _net.Health switch
+            {
+                NetHealth.Online => _t.Success,
+                NetHealth.Limited => Color.FromArgb(0xE0, 0x9B, 0x1A),
+                NetHealth.Offline => _t.Danger,
+                _ => _t.SubText,
+            };
+            int lh = TextRenderer.MeasureText("Ag", _fHeading).Height;
+            int nd = Px(10);
+            using (var db = new SolidBrush(col)) g.FillEllipse(db, r.X + Px(8), r.Y + Px(7) + (lh - nd) / 2, nd, nd);
+            var nf = TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
+            int ntx = r.X + Px(26);
+            TextRenderer.DrawText(g, "Internet  ·  " + _net.Summary, _fHeading, new Rectangle(ntx, r.Y + Px(7), r.Right - ntx - Px(8), lh), _t.Text, nf);
+            TextRenderer.DrawText(g, _net.Detail, _fSub, new Rectangle(ntx, r.Y + Px(7) + lh, r.Right - ntx - Px(8), r.Height - lh - Px(7)), _t.SubText, nf);
+        }
         for (int i = 0; i < _c.Entries.Count && i < _entryRects.Count; i++)
         {
             var (name, line, copy, up, gw, rest) = _c.Entries[i];
@@ -373,8 +461,16 @@ public sealed class PopupForm : Form
                 using (var hb = new SolidBrush(_t.SurfaceHover)) using (var hp = Theme.RoundRect(r, 5)) g.FillPath(hb, hp);
             int lh = TextRenderer.MeasureText("Ag", _fHeading).Height;
             int edot = Px(8);
-            using (var db = new SolidBrush(up ? _t.Success : _t.Border))
-                g.FillEllipse(db, r.X + Px(8), r.Y + Px(5) + (lh - edot) / 2, edot, edot);
+            var dotRect = new Rectangle(r.X + Px(8), r.Y + Px(5) + (lh - edot) / 2, edot, edot);
+            if (up && _blinkOn.Contains(i))
+            {
+                // Lit: brighter dot with a soft glow.
+                var glow = Rectangle.Inflate(dotRect, Px(3), Px(3));
+                using (var gb = new SolidBrush(Color.FromArgb(70, _t.Success))) g.FillEllipse(gb, glow);
+                using (var lb = new SolidBrush(ControlPaint.Light(_t.Success, 0.6f))) g.FillEllipse(lb, dotRect);
+            }
+            else
+                using (var db = new SolidBrush(up ? _t.Success : _t.Border)) g.FillEllipse(db, dotRect);
             int tx = r.X + Px(24), etw = r.Width - Px(32);
             var flags = TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
             TextRenderer.DrawText(g, name, _fHeading, new Rectangle(tx, r.Y + Px(5), etw - Px(60), lh), _t.Text, flags);

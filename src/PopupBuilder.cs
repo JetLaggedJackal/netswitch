@@ -97,6 +97,8 @@ public static class PopupBuilder
             if (!a.IsUp) { entries.Add(new PopupEntry(a.Name, "Disconnected", null, false)); continue; }
             var ips = a.Addresses.Count == 0 ? "No IPv4 address" : string.Join(", ", a.Addresses.Select(x => x.Mask.Length > 0 ? $"{x.Ip}/{NetInfo.PrefixLength(x.Mask)}" : x.Ip));
             var rest = new List<string> { a.ModeText };
+            var speed = NetInfo.FormatSpeed(a.SpeedBps);
+            if (speed.Length > 0) rest.Add(speed);
             var match = profiles.FirstOrDefault(p => string.Equals(p.Adapter, a.Name, StringComparison.OrdinalIgnoreCase) && NetInfo.Matches(p, a));
             if (match != null) rest.Add(match.Name);
             var gw = a.Gateways.FirstOrDefault(g => System.Net.IPAddress.TryParse(g, out _));
@@ -106,6 +108,8 @@ public static class PopupBuilder
         {
             Kind = PopupKind.Info,
             Title = "Network adapters",
+            LiveInternet = true,
+            LiveActivity = true,
             Entries = entries,
             Message = entries.Count == 0 ? "No adapters to show. Hidden adapters can be turned back on in Settings." : null,
             CloseOnOutsideClick = true,
