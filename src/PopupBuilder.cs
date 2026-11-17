@@ -153,19 +153,15 @@ public static class PopupBuilder
                 Badge = active ? "Active" : null,
             });
         }
-        if (previous.Prev?.Settings is { } ps && restore != null)
+        var buttons = new List<(string, Action)>();
+        if (previous.Prev?.Settings is { } ps && restore != null && !busy)
         {
             snap.TryGetValue(previous.Adapter, out var cur);
             // Only offer it while it would actually change something.
             if (!NetInfo.Matches(ps, cur))
             {
                 var adapter = previous.Adapter;
-                entries.Add(new PopupEntry("Previous settings", NetInfo.Describe(ps), null, false, null,
-                    $"{adapter}  ·  before {previous.Prev.At:HH:mm}")
-                {
-                    Click = busy ? null : () => restore(adapter),
-                    Hint = hotkeys ? "Restore  ·  Ctrl+Alt+0" : "Restore",
-                });
+                buttons.Add(("Previous", () => restore(adapter)));
             }
         }
         return new PopupContent
@@ -173,6 +169,7 @@ public static class PopupBuilder
             Kind = PopupKind.Info,
             Title = busy ? "Switching…" : "Switch profile",
             Entries = entries,
+            Buttons = buttons,
             Message = entries.Count == 0 ? "No profiles yet. Create one in Settings." : null,
             CloseOnOutsideClick = true,
             Sticky = true,

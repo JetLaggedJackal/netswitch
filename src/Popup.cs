@@ -371,7 +371,7 @@ public sealed class PopupForm : Form
         foreach (var b in order)
         {
             if (b == null) continue;
-            var w = Math.Max(_extra.Count > 1 ? Px(72) : Px(88), TextRenderer.MeasureText(b.Text, b.Font).Width + Px(24));
+            var w = Math.Max(_extra.Contains(b) ? Px(72) : Px(88), TextRenderer.MeasureText(b.Text, b.Font).Width + Px(24));
             x -= w;
             b.SetBounds(x, y, w, btnH);
             x -= Px(8);
