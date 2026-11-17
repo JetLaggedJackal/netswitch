@@ -29,6 +29,8 @@ public static class NetCheck
         }
         var dnsMs = dns.Result;
         parts.Add(dnsMs is { } d ? $"DNS {d} ms" : "DNS fails");
+        Record(pings[0].Result);
+        if (LossPercent is { } loss) parts.Add($"loss {loss}%");
 
         bool anyPing = pings.Any(p => p.Result != null);
         bool dnsOk = dnsMs != null;
@@ -42,12 +44,38 @@ public static class NetCheck
         return new NetCheckResult(health, summary, string.Join("  ·  ", parts));
     }
 
-    static async Task<long?> PingAsync(string ip)
+    // Recent results for 1.1.1.1, for the overview's sparkline and loss figure.
+    static readonly object HistLock = new();
+    static readonly List<long?> Hist = new();
+    const int HistMax = 40;
+
+    static void Record(long? ms)
+    {
+        lock (HistLock)
+        {
+            Hist.Add(ms);
+            if (Hist.Count > HistMax) Hist.RemoveAt(0);
+        }
+    }
+
+    public static List<long?> History { get { lock (HistLock) return new List<long?>(Hist); } }
+
+    /// <summary>Share of recent checks where 1.1.1.1 didn't answer, once there are enough samples.</summary>
+    public static int? LossPercent
+    {
+        get
+        {
+            lock (HistLock)
+                return Hist.Count < 5 ? null : (int)Math.Round(100.0 * Hist.Count(x => x == null) / Hist.Count);
+        }
+    }
+
+    public static async Task<long?> PingAsync(string ip, int timeout = 1500)
     {
         try
         {
             using var p = new Ping();
-            var r = await p.SendPingAsync(IPAddress.Parse(ip), 1500);
+            var r = await p.SendPingAsync(ip, timeout);
             return r.Status == IPStatus.Success ? r.RoundtripTime : null;
         }
         catch { return null; }

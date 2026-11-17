@@ -84,6 +84,9 @@ static class Program
                     var profile = cfg.Profiles.FirstOrDefault(p => p.Name == name);
                     result = profile == null ? (false, $"Profile \"{name}\" not found.") : NetApply.Apply(profile);
                     break;
+                case "--fix":
+                    result = QuickFix.Run(Arg("--fix") ?? "", Arg("--adapter") ?? "");
+                    break;
                 case "--startup-on":
                     result = Startup.Install(Arg("--startup-on") ?? Environment.UserName, Elevation.ExePath);
                     break;

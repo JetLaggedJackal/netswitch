@@ -45,6 +45,8 @@ public sealed class ProfilesForm : Form
     static readonly int[] SafeTimes = { 15, 30, 60, 120, 300 };
     static readonly string[] SafeTimeLabels = { "15 s", "30 s", "1 min", "2 min", "5 min" };
     ToggleSwitch _safe = null!;
+    ToggleSwitch _alerts = null!, _publicIp = null!;
+    ModernCombo _scanner = null!;
     readonly List<AdapterRow> _watchRows = new();
     // footer
     readonly Label _footerMsg;
@@ -209,7 +211,7 @@ public sealed class ProfilesForm : Form
 
         // ---------- settings page ----------
         var nTitle = Ui.Label(_t, "Settings", 14f, FontStyle.Bold);
-        var nSub = Ui.Label(_t, "Startup, switching, pop-ups, adapters and updates.", 8.75f, sub: true);
+        var nSub = Ui.Label(_t, "Startup, switching, network tools, pop-ups, adapters and updates.", 8.75f, sub: true);
         nSub.Margin = new Padding(0, 2, 0, 12);
 
         _startup = new ToggleSwitch(_t, "Start with Windows") { Width = 420, Checked = startupEnabled, Margin = new Padding(0, 0, 0, 2) };
@@ -246,6 +248,34 @@ public sealed class ProfilesForm : Form
         _trayStatus = new ToggleSwitch(_t, "Tray icon colour: blue online, amber DNS failing, red offline") { Width = 420, Checked = cfg.TrayStatus, Margin = new Padding(0, 0, 0, 2) };
         _swapClicks = new ToggleSwitch(_t, "Swap tray clicks (left: adapters, right: profiles)") { Width = 420, Checked = cfg.SwapClicks, Margin = new Padding(0, 0, 0, 2) };
         var switching = CardWith("Switching", _safe, safeHint, safeTimeLabel, _safeTimes, _hotkeys, _trayStatus, _swapClicks);
+
+        _alerts = new ToggleSwitch(_t, "Alerts: IP conflict, gateway MAC changed, new DHCP server") { Width = 420, Checked = cfg.Alerts, Margin = new Padding(0, 0, 0, 2) };
+        _publicIp = new ToggleSwitch(_t, "Show public IP and ISP in the overview (asks ipinfo.io)") { Width = 420, Checked = cfg.PublicIp, Margin = new Padding(0, 0, 0, 8) };
+        var scanLabel = Ui.Label(_t, "LAN scanner (opened by Scan LAN)", 8.5f, sub: true);
+        scanLabel.Margin = new Padding(0, 4, 0, 3);
+        _scanner = new ModernCombo(_t) { Width = 360, Margin = new Padding(0, 0, 10, 0) };
+        _scanner.Describe = o => o is NetDetails.Scanner sc ? (sc.Name, sc.Path.Length == 0 ? null : "found") : (o.ToString() ?? "", null);
+        var found = NetDetails.FindScanners();
+        foreach (var sc in found) _scanner.Items.Add(sc);
+        if (cfg.LanScanner.Length > 0 && !found.Any(f => string.Equals(f.Path, cfg.LanScanner, StringComparison.OrdinalIgnoreCase)))
+            _scanner.Items.Insert(0, new NetDetails.Scanner(System.IO.Path.GetFileName(cfg.LanScanner), cfg.LanScanner));
+        if (_scanner.Items.Count == 0) _scanner.Items.Add(new NetDetails.Scanner("None installed: use Browse…", ""));
+        _scanner.SelectedItem = _scanner.Items.FirstOrDefault(o => o is NetDetails.Scanner sc && string.Equals(sc.Path, cfg.LanScanner, StringComparison.OrdinalIgnoreCase)) ?? _scanner.Items[0];
+        var browse = new ModernButton(_t, "Browse…") { Width = 110, Margin = new Padding(0) };
+        browse.Click += (_, _) =>
+        {
+            using var d = new OpenFileDialog { Filter = "Programs|*.exe", Title = "Choose your LAN scanner" };
+            if (d.ShowDialog(this) != DialogResult.OK) return;
+            var pick = new NetDetails.Scanner(NetDetails.ScannerName(d.FileName), d.FileName);
+            _scanner.Items.RemoveAll(o => o is NetDetails.Scanner sc && sc.Path.Length == 0);
+            _scanner.Items.Insert(0, pick);
+            _scanner.SelectedItem = pick;
+        };
+        var scanRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = _t.Panel, Margin = new Padding(0, 0, 0, 4) };
+        scanRow.Controls.Add(_scanner);
+        scanRow.Controls.Add(browse);
+        var scanHint = Ui.Label(_t, "Advanced IP Scanner, Angry IP Scanner, SoftPerfect and Zenmap are found by themselves.", 8.5f, sub: true);
+        var tools = CardWith("Network tools", _alerts, _publicIp, scanLabel, scanRow, scanHint);
 
         var export = new ModernButton(_t, "Export profiles…") { Width = 170, Margin = new Padding(0, 0, 10, 0) };
         var import = new ModernButton(_t, "Import profiles…") { Width = 170, Margin = new Padding(0) };
@@ -285,7 +315,7 @@ public sealed class ProfilesForm : Form
         _autoUpdate = new ToggleSwitch(_t, "Check for updates once a day") { Width = 420, Checked = cfg.AutoCheckUpdates, Margin = new Padding(0, 0, 0, 2) };
         var updatesCard = CardWith("Updates", version, updateRow, _autoUpdate);
 
-        BuildPage(_notifyPage, nTitle, nSub, startupCard, switching, behaviour, watch, backup, updatesCard);
+        BuildPage(_notifyPage, nTitle, nSub, startupCard, switching, tools, behaviour, watch, backup, updatesCard);
 
         // ---------- empty state ----------
         var emptyTitle = Ui.Label(_t, "No profiles yet", 14f, FontStyle.Bold);
@@ -744,8 +774,11 @@ public sealed class ProfilesForm : Form
         _cfg.SwapClicks = _swapClicks.Checked;
         _cfg.Hotkeys = _hotkeys.Checked;
         _cfg.TrayStatus = _trayStatus.Checked;
+        _cfg.Alerts = _alerts.Checked;
+        _cfg.PublicIp = _publicIp.Checked;
+        _cfg.LanScanner = _scanner.SelectedItem is NetDetails.Scanner chosen ? chosen.Path : "";
         // Keep what the tray app recorded while this window was open.
-        try { var disk = AppConfig.Load(_cfg.Path); _cfg.Previous = disk.Previous; _cfg.LastUpdateCheck = disk.LastUpdateCheck; _cfg.SkippedVersion = disk.SkippedVersion; } catch { }
+        try { var disk = AppConfig.Load(_cfg.Path); _cfg.Previous = disk.Previous; _cfg.GatewayMacs = disk.GatewayMacs; _cfg.DhcpServers = disk.DhcpServers; _cfg.LastUpdateCheck = disk.LastUpdateCheck; _cfg.SkippedVersion = disk.SkippedVersion; } catch { }
         try { _cfg.Save(); }
         catch (Exception ex) { Fail("Could not save: " + ex.Message, null); return; }
         Saved?.Invoke(_cfg);

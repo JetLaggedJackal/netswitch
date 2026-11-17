@@ -61,7 +61,7 @@ public sealed class TrayApp : ApplicationContext
 
         // Internet status on the tray icon, refreshed every 30 s and after network changes.
         _statusTimer = new System.Windows.Forms.Timer { Interval = 30_000 };
-        _statusTimer.Tick += async (_, _) => await RefreshTrayStatusAsync();
+        _statusTimer.Tick += async (_, _) => { await RefreshTrayStatusAsync(); await CheckAlertsAsync(); };
         if (previewConfig == null) { _statusTimer.Start(); _ = RefreshTrayStatusAsync(); }
 
         // Auto-switch rules: check once shortly after start (e.g. signed in at the office), then on every network change.
@@ -168,7 +168,8 @@ public sealed class TrayApp : ApplicationContext
     void ToggleOverview() => TogglePanel("overview", () =>
     {
         var visible = NetInfo.Ordered(NetInfo.Snapshot().Values).Where(a => !_cfg.IsHidden(a.Name));
-        return PopupBuilder.Overview(visible, _cfg.Profiles, AdapterActions);
+        return PopupBuilder.Overview(visible, _cfg.Profiles, AdapterActions, a => NetDetails.Wifi(a.Id),
+            new() { ("Scan LAN", () => ScanLan(null)), ("Monitor…", () => OpenMonitor(null)) }, _cfg.PublicIp);
     });
 
     void BuildMenu()
@@ -259,8 +260,121 @@ public sealed class TrayApp : ApplicationContext
         if (PreviousFor(a.Name) is { } prev)
             list.Add(new("Return to previous settings", NetInfo.Describe(prev.Settings), () => _ = RestorePreviousAsync(a.Name)));
         list.Add(PopupAction.Separator);
+        bool up = a.IsUp;
+        list.Add(new("Renew DHCP lease", a.Dhcp ? "release + renew" : "static IP", up && a.Dhcp ? () => _ = RunFixAsync("renew", a.Name) : null));
+        list.Add(new("Flush DNS cache", "", () => _ = RunFixAsync("flushdns", a.Name)));
+        list.Add(new("Reset adapter", "off, then on", () => _ = RunFixAsync("reset", a.Name)));
+        list.Add(new("Fix everything", "all three", () => _ = RunFixAsync("all", a.Name)));
+        list.Add(PopupAction.Separator);
+        list.Add(new("Details…", a.IsWireless ? "Wi-Fi, DHCP, DNS" : "DHCP, DNS, this PC", () => OpenDetails(a.Name)));
+        list.Add(new("Scan LAN", ScannerLabel(), up && a.Addresses.Count > 0 ? () => ScanLan(a) : null));
         list.Add(new("Copy IP", ip ?? "", ip == null ? null : () => RunTool("copy", ip)));
         return list;
+    }
+
+    // ---------------- quick fixes ----------------
+
+    bool _fixing;
+
+    async Task RunFixAsync(string fix, string adapter)
+    {
+        if (_fixing || _busy) return;
+        _fixing = true;
+        try
+        {
+            var title = QuickFix.Title(fix);
+            if (fix is "reset" or "all") Popup(PopupBuilder.Info(title + "…", $"Working on {adapter}. The connection drops for a few seconds."));
+            bool ok; string msg;
+            bool admin = fix == "all" || QuickFix.NeedsAdmin(fix);
+            if (!admin || Elevation.IsElevated)
+                (ok, msg) = await Task.Run(() => QuickFix.Run(fix, adapter));
+            else
+            {
+                var code = await Elevation.RunElevatedAsync("--fix", fix, "--adapter", adapter, "--config", _cfg.Path);
+                if (code == null) return; // UAC cancelled
+                ok = code == 0;
+                msg = ReadResult() ?? (ok ? "Done." : "It didn't work.");
+            }
+            NetDetails.ForgetPublicIp();
+            var net = await Task.Run(NetCheck.RunAsync);
+            _netStatus = net; SetTrayIcon(_cfg.TrayStatus ? net.Health : null); UpdateTooltip();
+            var internet = net.Health switch
+            {
+                NetHealth.Online => "Internet is online",
+                NetHealth.Limited => "Internet: " + net.Summary.ToLowerInvariant(),
+                _ => "Still no internet",
+            };
+            var content = new PopupContent
+            {
+                Kind = !ok ? PopupKind.Error : net.Health == NetHealth.Online ? PopupKind.Success : PopupKind.Info,
+                Title = ok ? $"{title}: done" : $"{title}: problem",
+                Heading = adapter,
+                Message = msg + "\n\n" + internet + " (" + net.Detail + ").",
+                Sticky = !ok || net.Health != NetHealth.Online,
+            };
+            Popup(content);
+        }
+        catch (Exception ex) { Popup(PopupBuilder.Error("Fix failed", ex.Message)); }
+        finally { _fixing = false; }
+    }
+
+    // ---------------- details, monitor, LAN scanner ----------------
+
+    DetailsForm? _details;
+    MonitorForm? _monitor;
+
+    void OpenDetails(string adapter)
+    {
+        if (_details is { IsDisposed: false }) _details.Close();
+        _details = new DetailsForm(adapter, RunTool);
+        _details.Show();
+        _details.Activate();
+    }
+
+    void OpenMonitor(string? target)
+    {
+        if (_monitor is { IsDisposed: false }) { _monitor.Activate(); return; }
+        var gw = NetInfo.Primary(NetInfo.Snapshot().Values)?.Gateways.FirstOrDefault();
+        _monitor = new MonitorForm(gw, target);
+        _monitor.Show();
+        _monitor.Activate();
+    }
+
+    string ScannerLabel()
+    {
+        var path = ScannerPath();
+        return path == null ? "choose in Settings" : NetDetails.ScannerName(path);
+    }
+
+    string? ScannerPath()
+    {
+        if (_cfg.LanScanner.Length > 0 && File.Exists(_cfg.LanScanner)) return _cfg.LanScanner;
+        return NetDetails.FindScanners().FirstOrDefault()?.Path;
+    }
+
+    void ScanLan(AdapterInfo? a)
+    {
+        a ??= NetInfo.Primary(NetInfo.Snapshot().Values);
+        var path = ScannerPath();
+        if (path == null)
+        {
+            Popup(new PopupContent
+            {
+                Kind = PopupKind.Info, Title = "No LAN scanner yet",
+                Message = "NetSwitch opens the LAN scanner you like. Install one (Advanced IP Scanner or Angry IP Scanner are free) or pick any .exe in Settings > Network tools.",
+                Sticky = true,
+            });
+            return;
+        }
+        try
+        {
+            var psi = new ProcessStartInfo(path) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(path)! };
+            // Angry IP Scanner takes the range on its command line; the others remember or detect the subnet themselves.
+            if (NetDetails.Range(a) is { } r && Path.GetFileName(path).Equals("ipscan.exe", StringComparison.OrdinalIgnoreCase))
+            { psi.ArgumentList.Add("-f:range"); psi.ArgumentList.Add(r.First); psi.ArgumentList.Add(r.Last); }
+            Process.Start(psi);
+        }
+        catch (Exception ex) { Popup(PopupBuilder.Error("Could not open the LAN scanner", $"{path}\n{ex.Message}")); }
     }
 
     QuickIpForm? _quick;
@@ -480,7 +594,9 @@ public sealed class TrayApp : ApplicationContext
         var now = NetInfo.Snapshot();
         var previousSnap = _last;
         _ = RunAutoRulesAsync(previousSnap, now);
+        NetDetails.ForgetPublicIp();
         _ = RefreshTrayStatusAsync();
+        _ = CheckAlertsAsync();
         foreach (var name in _cfg.WatchAdapters)
         {
             _last.TryGetValue(name, out var before);
@@ -648,6 +764,94 @@ public sealed class TrayApp : ApplicationContext
         finally { _autoBusy = false; }
     }
 
+    // ---------------- alerts ----------------
+
+    bool _alertBusy;
+    readonly HashSet<string> _conflictShown = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>IP conflict, gateway MAC changed, DHCP server changed. Each change alerts once.</summary>
+    async Task CheckAlertsAsync()
+    {
+        if (_alertBusy || _fixedConfig != null) return;
+        var cfg = AppConfig.Load();
+        if (!cfg.Alerts) return;
+        _alertBusy = true;
+        try
+        {
+            var alerts = new List<PopupContent>();
+            bool changed = false;
+            var adapters = NetInfo.Snapshot().Values.Where(a => a.IsUp && a.Addresses.Count > 0 && NetInfo.LooksPhysical(a) && !cfg.IsHidden(a.Name)).ToList();
+            foreach (var a in adapters)
+            {
+                var (dup, gwMac) = await Task.Run(() => (NetDetails.DuplicateAddress(a.Id), a.Gateways.FirstOrDefault() is { } g ? NetDetails.MacOf(g) : null));
+                var name = a.Name;
+                if (dup != null)
+                {
+                    if (_conflictShown.Add($"{name}|{dup}"))
+                        alerts.Add(Alert(PopupKind.Error, "IP address conflict",
+                            $"Another device on {name} is also using {dup}. One of you needs a different address.",
+                            a.Dhcp ? ("Get new IP", () => _ = RunFixAsync("renew", name)) : ("Set static IP…", () => QuickStatic(a)), name));
+                }
+                else _conflictShown.RemoveWhere(k => k.StartsWith(name + "|", StringComparison.OrdinalIgnoreCase));
+
+                var gw = a.Gateways.FirstOrDefault();
+                if (gw == null) continue;
+                var key = $"{name}|{gw}";
+                if (gwMac != null)
+                {
+                    // Remember every MAC seen for this gateway, so moving between two sites that both use
+                    // 192.168.1.1 alerts only the first time, not on every switch.
+                    var known = Known(cfg.GatewayMacs, key);
+                    if (!known.Contains(gwMac, StringComparer.OrdinalIgnoreCase))
+                    {
+                        if (known.Count > 0)
+                            alerts.Add(Alert(PopupKind.Info, "Gateway MAC changed",
+                                $"{gw} on {name} now answers from {gwMac}; before it was {known[^1]}. Expected after a router swap or on a new network; otherwise someone may be intercepting traffic (ARP spoofing).",
+                                null, name));
+                        cfg.GatewayMacs[key] = Remember(known, gwMac); changed = true;
+                    }
+                }
+                if (a.Dhcp && a.DhcpServer is { Length: > 0 } srv)
+                {
+                    var known = Known(cfg.DhcpServers, key);
+                    if (!known.Contains(srv))
+                    {
+                        if (known.Count > 0)
+                            alerts.Add(Alert(PopupKind.Info, "New DHCP server",
+                                $"{name} got its address from {srv}, not the usual {known[^1]}. If nothing changed on your network, look for a rogue DHCP server.",
+                                null, name));
+                        cfg.DhcpServers[key] = Remember(known, srv); changed = true;
+                    }
+                }
+            }
+            if (changed)
+            {
+                var fresh = AppConfig.Load(); // save only our two maps, on top of whatever is on disk now
+                fresh.GatewayMacs = cfg.GatewayMacs; fresh.DhcpServers = cfg.DhcpServers;
+                try { fresh.Save(); } catch { }
+            }
+            foreach (var c in alerts) Popup(c);
+        }
+        catch { }
+        finally { _alertBusy = false; }
+    }
+
+    static List<string> Known(Dictionary<string, string> map, string key) =>
+        map.TryGetValue(key, out var v) ? v.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList() : new();
+
+    static string Remember(List<string> known, string value) => string.Join(",", known.Append(value).TakeLast(5));
+
+    PopupContent Alert(PopupKind kind, string title, string message, (string, Action)? action, string adapter)
+    {
+        var buttons = new List<(string, Action)> { ("Details…", () => OpenDetails(adapter)) };
+        return new PopupContent
+        {
+            Kind = kind, Title = title, Message = message, Sticky = true, HideSettings = true,
+            ActionText = action?.Item1, Action = action?.Item2,
+            Buttons = buttons,
+        };
+    }
+
     protected override void ExitThreadCore()
     {
         _hotkeys.Dispose();
@@ -656,6 +860,8 @@ public sealed class TrayApp : ApplicationContext
         NetworkChange.NetworkAvailabilityChanged -= OnAvailabilityChanged;
         _updateTimer.Stop();
         _editor?.Close();
+        _details?.Close();
+        _monitor?.Close();
         _icon.Visible = false;
         _icon.Dispose();
         base.ExitThreadCore();

@@ -90,7 +90,8 @@ public static class PopupBuilder
 
     /// <summary>Right-click overview: every visible adapter with its address.</summary>
     public static PopupContent Overview(IEnumerable<AdapterInfo> adapters, IEnumerable<Profile> profiles,
-        Func<AdapterInfo, List<PopupAction>>? actions = null)
+        Func<AdapterInfo, List<PopupAction>>? actions = null, Func<AdapterInfo, WifiInfo?>? wifi = null,
+        List<(string, Action)>? buttons = null, bool publicIp = false)
     {
         var entries = new List<PopupEntry>();
         foreach (var a in adapters)
@@ -103,7 +104,15 @@ public static class PopupBuilder
             var match = profiles.FirstOrDefault(p => string.Equals(p.Adapter, a.Name, StringComparison.OrdinalIgnoreCase) && NetInfo.Matches(p, a));
             if (match != null) rest.Add(match.Name);
             var gw = a.Gateways.FirstOrDefault(g => System.Net.IPAddress.TryParse(g, out _));
-            entries.Add(new PopupEntry(a.Name, ips, a.Addresses.FirstOrDefault().Ip, true, gw, string.Join("  ·  ", rest)) { Actions = actions?.Invoke(a) });
+            var w = a.IsWireless ? wifi?.Invoke(a) : null;
+            string? line2 = w == null ? null : string.Join("  ·  ", new[]
+            {
+                w.Ssid, $"{w.SignalPercent}%", w.Channel > 0 ? $"ch {w.Channel} ({w.Band})" : "", NetDetails.ShortStandard(w.Standard),
+            }.Where(x => x.Length > 0));
+            entries.Add(new PopupEntry(a.Name, ips, a.Addresses.FirstOrDefault().Ip, true, gw, string.Join("  ·  ", rest))
+            {
+                Actions = actions?.Invoke(a), Line2 = line2, Signal = w?.Bars ?? -1,
+            });
         }
         return new PopupContent
         {
@@ -111,6 +120,8 @@ public static class PopupBuilder
             Title = "Network adapters",
             LiveInternet = true,
             LiveActivity = true,
+            PublicIp = publicIp,
+            Buttons = buttons ?? new(),
             Entries = entries,
             Message = entries.Count == 0 ? "No adapters to show. Hidden adapters can be turned back on in Settings." : null,
             CloseOnOutsideClick = true,

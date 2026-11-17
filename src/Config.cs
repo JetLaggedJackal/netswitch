@@ -69,6 +69,16 @@ public sealed class AppConfig
     public bool TrayStatus { get; set; } = true;
     /// <summary>Swap the tray clicks: left = adapter overview, right = profile list.</summary>
     public bool SwapClicks { get; set; }
+    /// <summary>Pop up on IP conflicts, a changed gateway MAC or a new DHCP server.</summary>
+    public bool Alerts { get; set; } = true;
+    /// <summary>Show the public IP and ISP in the overview (asks ipinfo.io).</summary>
+    public bool PublicIp { get; set; } = true;
+    /// <summary>LAN scanner app opened by "Scan LAN". Empty = first one found.</summary>
+    public string LanScanner { get; set; } = "";
+    /// <summary>Last seen MAC of each gateway ("adapter|gateway ip" -> mac), for the gateway-changed alert.</summary>
+    public Dictionary<string, string> GatewayMacs { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Last seen DHCP server per network ("adapter|gateway ip" -> server), for the new-DHCP-server alert.</summary>
+    public Dictionary<string, string> DhcpServers { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     [JsonIgnore] public string Path { get; private set; } = DefaultPath;
 
@@ -100,6 +110,9 @@ public sealed class AppConfig
         cfg.WatchAdapters ??= new();
         cfg.HiddenAdapters ??= new();
         cfg.Previous = new Dictionary<string, PreviousSettings>(cfg.Previous ?? new(), StringComparer.OrdinalIgnoreCase);
+        cfg.GatewayMacs = new Dictionary<string, string>(cfg.GatewayMacs ?? new(), StringComparer.OrdinalIgnoreCase);
+        cfg.DhcpServers = new Dictionary<string, string>(cfg.DhcpServers ?? new(), StringComparer.OrdinalIgnoreCase);
+        cfg.LanScanner ??= "";
         foreach (var p in cfg.Profiles) { p.Dns ??= new(); p.AutoSsid ??= ""; }
         return cfg;
     }

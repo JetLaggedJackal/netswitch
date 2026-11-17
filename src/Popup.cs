@@ -30,6 +30,11 @@ public sealed record PopupContent
     /// <summary>Optional main button (replaces "Copy IP").</summary>
     public string? ActionText { get; init; }
     public Action? Action { get; init; }
+    /// <summary>Extra buttons, shown left of Settings…</summary>
+    public List<(string Text, Action Run)> Buttons { get; init; } = new();
+    public bool HideSettings { get; init; }
+    /// <summary>Show public IP and ISP under the internet status (needs LiveInternet).</summary>
+    public bool PublicIp { get; init; }
 }
 
 /// <summary>One adapter in the overview. The second line reads: Line · gw Gateway · Rest.</summary>
@@ -43,6 +48,10 @@ public sealed record PopupEntry(string Name, string Line, string? Copy, bool Up,
     public string? Badge { get; init; }
     /// <summary>When set, clicking the entry opens this menu (null text = separator). Takes precedence over Copy.</summary>
     public List<PopupAction>? Actions { get; init; }
+    /// <summary>Optional third line, e.g. Wi-Fi network and signal.</summary>
+    public string? Line2 { get; init; }
+    /// <summary>Signal bars (0-4) drawn before <see cref="Line2"/>; -1 = none.</summary>
+    public int Signal { get; init; } = -1;
 }
 
 public sealed record PopupAction(string? Text, string Detail = "", Action? Run = null)
@@ -79,6 +88,8 @@ public sealed class PopupForm : Form
     readonly Font _fTitle, _fHeading, _fSub, _fBig, _fBody, _fLabel, _fSuffix;
     readonly ModernButton? _copy;
     readonly ModernButton _open;
+    readonly List<ModernButton> _extra = new();
+    PublicIpInfo? _pub;
     Rectangle _closeRect;
     bool _closeHover, _fadingOut;
     int _contentHeight;
@@ -149,9 +160,17 @@ public sealed class PopupForm : Form
                 wasDown = down;
             };
         }
-        _open = new ModernButton(_t, "Settings…") { Font = _fBody, TabStop = false };
+        _open = new ModernButton(_t, "Settings…") { Font = _fBody, TabStop = false, Visible = !c.HideSettings };
         _open.Click += (_, _) => { OpenProfilesRequested?.Invoke(); BeginClose(); };
         Controls.Add(_open);
+        foreach (var (text, run) in c.Buttons)
+        {
+            var b = new ModernButton(_t, text) { Font = _fBody, TabStop = false };
+            // Post: the action may open a window or close this pop-up.
+            b.Click += (_, _) => { BeginClose(); var ctx = SynchronizationContext.Current; if (ctx != null) ctx.Post(_ => run(), null); else run(); };
+            Controls.Add(b);
+            _extra.Add(b);
+        }
 
         _life.Interval = Math.Max(3, seconds) * 1000;
         _life.Tick += (_, _) =>
@@ -212,6 +231,13 @@ public sealed class PopupForm : Form
             if (IsDisposed) return;
             _net = r;
             Invalidate(_netRect);
+            if (_c.PublicIp && r.Health != NetHealth.Offline)
+            {
+                var pub = await NetDetails.PublicIpAsync();
+                if (IsDisposed) return;
+                if (pub != null && pub != _pub) { _pub = pub; Invalidate(_netRect); }
+                if (pub == null && !_pubFailed) { _pubFailed = true; Invalidate(_netRect); }
+            }
         }
         catch { }
         finally { _netBusy = false; }
@@ -314,7 +340,7 @@ public sealed class PopupForm : Form
         if (_c.LiveInternet)
         {
             y += Px(10);
-            int nh = TextRenderer.MeasureText("Ag", _fHeading).Height + TextRenderer.MeasureText("Ag", _fSub).Height + Px(14);
+            int nh = TextRenderer.MeasureText("Ag", _fHeading).Height + TextRenderer.MeasureText("Ag", _fSub).Height * (_c.PublicIp ? 2 : 1) + Px(14);
             _netRect = new Rectangle(Pad - Px(8), y, width - Pad * 2 + Px(16), nh);
             y += nh;
         }
@@ -323,9 +349,11 @@ public sealed class PopupForm : Form
         {
             y += Px(10);
             int eh = TextRenderer.MeasureText("Ag", _fHeading).Height + TextRenderer.MeasureText("Ag", _fSub).Height + Px(10);
-            foreach (var _ in _c.Entries)
+            int sh = TextRenderer.MeasureText("Ag", _fSub).Height;
+            foreach (var en in _c.Entries)
             {
-                _entryRects.Add(new Rectangle(Pad - Px(8), y, width - Pad * 2 + Px(16), eh));
+                _entryRects.Add(new Rectangle(Pad - Px(8), y, width - Pad * 2 + Px(16), eh + (en.Line2 != null ? sh : 0)));
+                if (en.Line2 != null) y += sh;
                 y += eh + Px(2);
             }
         }
@@ -338,10 +366,12 @@ public sealed class PopupForm : Form
             var w = Math.Max(Px(60), TextRenderer.MeasureText(_exit.Text, _exit.Font).Width + Px(24));
             _exit.SetBounds(Pad - Px(8), y, w, btnH);
         }
-        foreach (var b in new[] { _open, _copy })
+        var order = new List<ModernButton?> { _c.HideSettings ? null : _open, _copy };
+        order.AddRange(Enumerable.Reverse(_extra));
+        foreach (var b in order)
         {
             if (b == null) continue;
-            var w = Math.Max(Px(88), TextRenderer.MeasureText(b.Text, b.Font).Width + Px(28));
+            var w = Math.Max(_extra.Count > 1 ? Px(72) : Px(88), TextRenderer.MeasureText(b.Text, b.Font).Width + Px(24));
             x -= w;
             b.SetBounds(x, y, w, btnH);
             x -= Px(8);
@@ -352,6 +382,37 @@ public sealed class PopupForm : Form
     }
 
     int LabelWidth() => Px(92);
+
+    Rectangle _pubRect;
+    bool _hoverPub, _pubCopied, _pubFailed;
+
+    /// <summary>Latency to 1.1.1.1 over the last couple of minutes; gaps are lost pings.</summary>
+    void DrawSparkline(Graphics g, Rectangle r)
+    {
+        var h = NetCheck.History;
+        if (h.Count < 2) return;
+        var vals = h.Where(x => x != null).Select(x => (float)x!.Value).ToList();
+        if (vals.Count == 0) return;
+        float max = Math.Max(20, vals.Max() * 1.15f);
+        float step = r.Width / (float)(Math.Max(h.Count, 20) - 1);
+        float x0 = r.Right - step * (h.Count - 1);
+        using var pen = new Pen(_t.Accent, Math.Max(1.2f, S * 1.1f)) { LineJoin = LineJoin.Round };
+        var run = new List<PointF>();
+        void Flush() { if (run.Count > 1) g.DrawLines(pen, run.ToArray()); run.Clear(); }
+        for (int i = 0; i < h.Count; i++)
+        {
+            float x = x0 + i * step;
+            if (h[i] is not { } v)
+            {
+                Flush();
+                using var lost = new Pen(_t.Danger, Math.Max(1f, S)); // lost ping: short red tick
+                g.DrawLine(lost, x, r.Bottom - Px(6), x, r.Bottom);
+                continue;
+            }
+            run.Add(new PointF(x, r.Bottom - Px(2) - (r.Height - Px(4)) * Math.Min(1f, v / max)));
+        }
+        Flush();
+    }
 
     Size Measure(Graphics g, string text, Font f, int width) =>
         TextRenderer.MeasureText(g, text, f, new Size(width - Pad * 2, int.MaxValue), TextFormatFlags.WordBreak);
@@ -456,8 +517,33 @@ public sealed class PopupForm : Form
             using (var db = new SolidBrush(col)) g.FillEllipse(db, r.X + Px(8), r.Y + Px(7) + (lh - nd) / 2, nd, nd);
             var nf = TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
             int ntx = r.X + Px(26);
-            TextRenderer.DrawText(g, "Internet  ·  " + _net.Summary, _fHeading, new Rectangle(ntx, r.Y + Px(7), r.Right - ntx - Px(8), lh), _t.Text, nf);
-            TextRenderer.DrawText(g, _net.Detail, _fSub, new Rectangle(ntx, r.Y + Px(7) + lh, r.Right - ntx - Px(8), r.Height - lh - Px(7)), _t.SubText, nf);
+            int sparkW = Px(84);
+            TextRenderer.DrawText(g, "Internet  ·  " + _net.Summary, _fHeading, new Rectangle(ntx, r.Y + Px(7), r.Right - ntx - Px(16) - sparkW, lh), _t.Text, nf);
+            DrawSparkline(g, new Rectangle(r.Right - Px(10) - sparkW, r.Y + Px(7), sparkW, lh));
+            int slh = TextRenderer.MeasureText("Ag", _fSub).Height;
+            TextRenderer.DrawText(g, _net.Detail, _fSub, new Rectangle(ntx, r.Y + Px(7) + lh, r.Right - ntx - Px(8), slh), _t.SubText, nf);
+            if (_c.PublicIp)
+            {
+                var pr = new Rectangle(ntx, r.Y + Px(7) + lh + slh, r.Right - ntx - Px(8), slh);
+                if (_pub == null)
+                    TextRenderer.DrawText(g, _net.Health == NetHealth.Offline ? "Public IP: not available while offline"
+                        : _pubFailed ? "Public IP: couldn't look it up" : "Public IP: looking up…", _fSub, pr, _t.SubText, nf);
+                else
+                {
+                    var np2 = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
+                    var lead = "Public IP ";
+                    int lw0 = TextRenderer.MeasureText(g, lead, _fSub, Size.Empty, np2).Width;
+                    int iw = TextRenderer.MeasureText(g, _pub.Ip, _fSub, Size.Empty, np2).Width;
+                    TextRenderer.DrawText(g, lead, _fSub, new Rectangle(pr.X, pr.Y, lw0, pr.Height), _t.SubText, np2);
+                    _pubRect = new Rectangle(pr.X + lw0 - Px(3), pr.Y - Px(1), iw + Px(6), pr.Height + Px(2));
+                    if (_hoverPub)
+                        using (var hb = new SolidBrush(_t.Border)) using (var hp = Theme.RoundRect(_pubRect, Px(4))) g.FillPath(hb, hp);
+                    TextRenderer.DrawText(g, _pub.Ip, _fSub, new Rectangle(pr.X + lw0, pr.Y, iw, pr.Height), _pubCopied ? _t.Success : _t.Accent, np2);
+                    var tail = string.Join("  ·  ", new[] { _pubCopied ? "copied" : "", _pub.Isp, _pub.Place }.Where(x => x.Length > 0));
+                    if (tail.Length > 0)
+                        TextRenderer.DrawText(g, "  ·  " + tail, _fSub, new Rectangle(pr.X + lw0 + iw, pr.Y, Math.Max(0, pr.Right - pr.X - lw0 - iw), pr.Height), _t.SubText, nf);
+                }
+            }
         }
         for (int i = 0; i < _c.Entries.Count && i < _entryRects.Count; i++)
         {
@@ -518,6 +604,24 @@ public sealed class PopupForm : Form
                 Part(gwText, _t.Accent);
                 if (rest.Length > 0) Part("  ·  " + rest, _t.SubText, last: true);
             }
+            if (entry.Line2 != null)
+            {
+                int sh2 = TextRenderer.MeasureText("Ag", _fSub).Height;
+                var l2 = new Rectangle(tx, r.Y + Px(5) + lh + sh2, etw, sh2);
+                int bx = l2.X;
+                if (entry.Signal >= 0)
+                {
+                    int bw = Px(3), gap = Px(1.5f), bh = Px(10), by = l2.Y + (sh2 - bh) / 2;
+                    for (int b = 0; b < 4; b++)
+                    {
+                        int h2 = bh * (b + 1) / 4;
+                        using var bb = new SolidBrush(b < entry.Signal ? _t.Accent : _t.Border);
+                        g.FillRectangle(bb, bx + b * (bw + gap), by + bh - h2, bw, h2);
+                    }
+                    bx += 4 * (bw + gap) + Px(6);
+                }
+                TextRenderer.DrawText(g, entry.Line2, _fSub, new Rectangle(bx, l2.Y, l2.Right - bx, sh2), _t.SubText, flags);
+            }
         }
     }
 
@@ -527,8 +631,9 @@ public sealed class PopupForm : Form
         if (h != _closeHover) { _closeHover = h; Invalidate(_closeRect); }
         int he = _entryRects.FindIndex(r => r.Contains(e.Location));
         int hg = GatewayAt(e.Location);
-        if (he != _hoverEntry || hg != _hoverGw) { _hoverEntry = he; _hoverGw = hg; Invalidate(); }
-        Cursor = h || hg >= 0 || (he >= 0 && (_c.Entries[he].Copy != null || _c.Entries[he].Click != null || _c.Entries[he].Actions != null)) ? Cursors.Hand : Cursors.Default;
+        bool hp = _pub != null && _pubRect.Contains(e.Location);
+        if (he != _hoverEntry || hg != _hoverGw || hp != _hoverPub) { _hoverEntry = he; _hoverGw = hg; _hoverPub = hp; Invalidate(); }
+        Cursor = h || hg >= 0 || hp || (he >= 0 && (_c.Entries[he].Copy != null || _c.Entries[he].Click != null || _c.Entries[he].Actions != null)) ? Cursors.Hand : Cursors.Default;
     }
 
     protected override void OnMouseLeave(EventArgs e) { _closeHover = false; _hoverEntry = -1; _hoverGw = -1; Invalidate(); }
@@ -585,6 +690,11 @@ public sealed class PopupForm : Form
         if (_closeRect.Contains(e.Location)) { BeginClose(); return; }
         int g = GatewayAt(e.Location);
         if (g >= 0) { ShowGatewayTools(g); return; }
+        if (_pub != null && _pubRect.Contains(e.Location))
+        {
+            try { Clipboard.SetText(_pub.Ip); _pubCopied = true; Invalidate(_netRect); } catch { }
+            return;
+        }
         int i = _entryRects.FindIndex(r => r.Contains(e.Location));
         if (i >= 0 && _c.Entries[i].Click is { } click) { BeginClose(); click(); return; }
         if (i >= 0 && _c.Entries[i].Actions is { Count: > 0 } actions)

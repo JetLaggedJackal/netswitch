@@ -25,9 +25,13 @@ After that, updates come from **Settings > Updates**. Profiles and settings live
 ## Using it
 
 - **Left-click the tray icon:** your profiles. Click one to switch; the active one says "Active". After a switch, "Previous settings" lets you go back.
-- **Right-click the tray icon:** internet status (pings 1.1.1.1 / 8.8.8.8, DNS lookup), and every adapter with its IP, DHCP/static, link speed, gateway and matching profile; dots blink with traffic.
-  - Click an adapter: **Set static IP…**, **Switch to DHCP**, **Return to previous settings**, **Copy IP**.
+- **Right-click the tray icon:** internet status (pings 1.1.1.1 / 8.8.8.8, DNS lookup, packet loss, a 2-minute latency graph), your public IP and ISP (from ipinfo.io; click the IP to copy), and every adapter with its IP, DHCP/static, link speed, gateway and matching profile; Wi-Fi adds network, signal, channel and standard. Dots blink with traffic.
+  - Click an adapter: **Set static IP…**, **Switch to DHCP**, **Return to previous settings**, quick fixes (**Renew DHCP lease**, **Flush DNS cache**, **Reset adapter**, **Fix everything**), **Details…**, **Scan LAN**, **Copy IP**.
   - Click its gateway: ping -t, ping, tracert, pathping, open the router page, copy.
+  - **Details…** opens a window with the Wi-Fi link (access point, signal in dBm, band, rates, security), addressing and DHCP lease times, DNS servers with a lookup box (compares your DNS with 1.1.1.1), and this PC (network profile, firewall, MTU, IPv6, routes, open connections, listening ports). Click any value to copy it; **Copy all** for tickets.
+  - **Monitor…** pings 1.1.1.1, 8.8.8.8, the gateway or any host every second and shows latency, jitter, loss and worst over 10 minutes. **Save CSV…** exports it.
+  - **Scan LAN** opens your LAN scanner (Settings > Network tools; Advanced IP Scanner, Angry IP Scanner, SoftPerfect and Zenmap are found automatically, or browse to any .exe). NetSwitch doesn't scan by itself.
+- **Alerts** (Settings > Network tools): a pop-up when another device uses your IP, when the gateway answers from a MAC address not seen there before (router swap or ARP spoofing), or when the address comes from a DHCP server not seen there before (rogue DHCP).
 - After every switch the pop-up has **Undo**. With **Safe switching** on (Settings), NetSwitch asks you to keep the new settings and goes back by itself after 30 seconds if you don't, which saves you when a change cuts you off.
 - **Settings…** opens the window where you:
   - add, duplicate and delete profiles: name, adapter, IP Automatic/Manual, DNS Automatic/Manual (DHCP with your own DNS works). Type `192.168.1.50/24` in the IP box or `24` in the mask box and the mask fills in as 255.255.255.0;

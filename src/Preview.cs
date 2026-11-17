@@ -43,8 +43,29 @@ static class Preview
                     new("Ethernet 5", "Cisco AnyConnect", false, true, new List<(string, string)>(), new List<string>(), new List<string>()),
                 };
                 var oh = new Form { ShowInTaskbar = false, Opacity = 0, Size = new Size(1, 1) };
-                oh.Shown += (_, _) => PopupForm.Show(PopupBuilder.Overview(fake, cfg.Profiles, _ => new List<PopupAction> { new("Set static IP…"), PopupAction.Separator }), 600);
+                var wifiFake = new WifiInfo("Softech-5G", "9c:5c:8e:04:b1:30", 78, 44, "Wi-Fi 6 (802.11ax)", "WPA3-Personal", 1_200_000, 960_000);
+                fake[0] = fake[0] with { IsWireless = true, SpeedBps = 1_200_000_000 };
+                oh.Shown += (_, _) => PopupForm.Show(PopupBuilder.Overview(fake, cfg.Profiles, _ => new List<PopupAction> { new("Set static IP…"), PopupAction.Separator },
+                    x => x.IsWireless ? wifiFake : null, new() { ("Scan LAN", () => { }), ("Monitor…", () => { }) }, publicIp: true), 600);
                 Application.Run(oh);
+                break;
+            case "details":
+                DetailsForm.TestAdapter = new AdapterInfo("Wi-Fi", "MediaTek Wi-Fi 6 MT7921", true, true, new List<(string, string)> { ("192.168.1.73", "255.255.255.0") }, new List<string> { "192.168.1.1" }, new List<string> { "192.168.1.1" })
+                    { IsWireless = true, Mac = "A4-C3-F0-1E-77-2B", DhcpServer = "192.168.1.1", SpeedBps = 1_200_000_000 };
+                var dn = "Wi-Fi";
+                Application.Run(new DetailsForm(dn, (_, _) => { }));
+                break;
+            case "monitor":
+                Application.Run(new MonitorForm("192.168.1.1", null));
+                break;
+            case "alert":
+                var ah = new Form { ShowInTaskbar = false, Opacity = 0, Size = new Size(1, 1) };
+                ah.Shown += (_, _) =>
+                {
+                    PopupForm.Show(new PopupContent { Kind = PopupKind.Error, Title = "IP address conflict", Message = "Another device on Wi-Fi is also using 192.168.1.73. One of you needs a different address.", Sticky = true, HideSettings = true, ActionText = "Get new IP", Action = () => { }, Buttons = new() { ("Details…", () => { }) } }, 600);
+                    PopupForm.Show(new PopupContent { Kind = PopupKind.Info, Title = "Gateway MAC changed", Message = "192.168.1.1 on Wi-Fi was 00:1d:aa:7f:22:10, now 9c:5c:8e:04:b1:33. Expected after a router swap; otherwise someone may be intercepting traffic (ARP spoofing).", Sticky = true, HideSettings = true, Buttons = new() { ("Details…", () => { }) } }, 600);
+                };
+                Application.Run(ah);
                 break;
             case "icons":
                 var iform = new Form { BackColor = Color.FromArgb(32, 32, 32), ClientSize = new Size(300, 120), Text = "icons" };
