@@ -41,6 +41,13 @@ public sealed record PopupEntry(string Name, string Line, string? Copy, bool Up,
     public string? Hint { get; init; }
     /// <summary>Hint shown on the right all the time, in the accent colour (e.g. "Active").</summary>
     public string? Badge { get; init; }
+    /// <summary>When set, clicking the entry opens this menu (null text = separator). Takes precedence over Copy.</summary>
+    public List<PopupAction>? Actions { get; init; }
+}
+
+public sealed record PopupAction(string? Text, string Detail = "", Action? Run = null)
+{
+    public static readonly PopupAction Separator = new(null);
 }
 
 /// <summary>Custom notification window: bottom-right, no focus stealing, stacks, rich content.</summary>
@@ -363,10 +370,8 @@ public sealed class PopupForm : Form
         // Left accent stripe.
         using (var stripe = new SolidBrush(accent)) g.FillRectangle(stripe, 0, 0, Px(4), Height);
 
-        // Title row: app icon dot, title, time, close.
-        int dot = Px(10);
-        using (var b = new SolidBrush(accent)) g.FillEllipse(b, x, y + Px(5), dot, dot);
-        var titleRect = new Rectangle(x + dot + Px(8), y, w - Px(90), Px(20));
+        // Title row: title, time, close.
+        var titleRect = new Rectangle(x - Px(2), y, w - Px(80), Px(20));
         TextRenderer.DrawText(g, _c.Title, _fTitle, titleRect, _t.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         var time = DateTime.Now.ToString("HH:mm");
         var tw = TextRenderer.MeasureText(time, _fSub).Width;
@@ -456,7 +461,7 @@ public sealed class PopupForm : Form
             var (name, line, copy, up, gw, rest) = _c.Entries[i];
             var r = _entryRects[i];
             var entry = _c.Entries[i];
-            bool clickable = copy != null || entry.Click != null;
+            bool clickable = copy != null || entry.Click != null || entry.Actions != null;
             if (i == _hoverEntry && clickable)
                 using (var hb = new SolidBrush(_t.SurfaceHover)) using (var hp = Theme.RoundRect(r, 5)) g.FillPath(hb, hp);
             int lh = TextRenderer.MeasureText("Ag", _fHeading).Height;
@@ -476,7 +481,7 @@ public sealed class PopupForm : Form
             TextRenderer.DrawText(g, name, _fHeading, new Rectangle(tx, r.Y + Px(5), etw - Px(60), lh), _t.Text, flags);
             if (i == _copiedEntry || (i == _hoverEntry && clickable) || entry.Badge != null)
             {
-                var hint = i == _copiedEntry ? "Copied" : entry.Badge ?? entry.Hint ?? "Copy IP";
+                var hint = i == _copiedEntry ? "Copied" : entry.Badge ?? entry.Hint ?? (entry.Actions != null ? "Options" : "Copy IP");
                 var hc = i == _copiedEntry ? _t.Success : entry.Badge != null ? _t.Accent : _t.SubText;
                 TextRenderer.DrawText(g, hint, _fSub, new Rectangle(tx, r.Y + Px(5), etw, lh), hc,
                     TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
@@ -520,7 +525,7 @@ public sealed class PopupForm : Form
         int he = _entryRects.FindIndex(r => r.Contains(e.Location));
         int hg = GatewayAt(e.Location);
         if (he != _hoverEntry || hg != _hoverGw) { _hoverEntry = he; _hoverGw = hg; Invalidate(); }
-        Cursor = h || hg >= 0 || (he >= 0 && (_c.Entries[he].Copy != null || _c.Entries[he].Click != null)) ? Cursors.Hand : Cursors.Default;
+        Cursor = h || hg >= 0 || (he >= 0 && (_c.Entries[he].Copy != null || _c.Entries[he].Click != null || _c.Entries[he].Actions != null)) ? Cursors.Hand : Cursors.Default;
     }
 
     protected override void OnMouseLeave(EventArgs e) { _closeHover = false; _hoverEntry = -1; _hoverGw = -1; Invalidate(); }
@@ -529,6 +534,21 @@ public sealed class PopupForm : Form
     {
         foreach (var (i, r) in _gwRects) if (r.Contains(p)) return i;
         return -1;
+    }
+
+    void ShowActions(string header, List<PopupAction> actions, Point at)
+    {
+        _toolsMenu?.Dispose();
+        var m = _toolsMenu = new ContextMenuStrip { ShowImageMargin = false, Font = _fBody, Renderer = new MenuRenderer(_t), BackColor = _t.Surface, Padding = new Padding(0, 4, 0, 4) };
+        m.Items.Add(new ToolStripMenuItem(header) { Enabled = false, Tag = "header", Padding = new Padding(4, 4, 4, 2) });
+        foreach (var a in actions)
+        {
+            if (a.Text == null) { m.Items.Add(new ToolStripSeparator()); continue; }
+            var run = a.Run;
+            m.Items.Add(new ToolStripMenuItem(a.Text, null, (_, _) => run?.Invoke())
+            { Padding = new Padding(4, 5, 4, 5), ShortcutKeyDisplayString = a.Detail, ShowShortcutKeys = a.Detail.Length > 0, Enabled = run != null });
+        }
+        m.Show(this, at);
     }
 
     void ShowGatewayTools(int i)
@@ -562,6 +582,11 @@ public sealed class PopupForm : Form
         if (g >= 0) { ShowGatewayTools(g); return; }
         int i = _entryRects.FindIndex(r => r.Contains(e.Location));
         if (i >= 0 && _c.Entries[i].Click is { } click) { BeginClose(); click(); return; }
+        if (i >= 0 && _c.Entries[i].Actions is { Count: > 0 } actions)
+        {
+            ShowActions(_c.Entries[i].Name, actions, new Point(e.X, e.Y + Px(4)));
+            return;
+        }
         if (i >= 0 && _c.Entries[i].Copy is { } ip)
         {
             try { Clipboard.SetText(ip); _copiedEntry = i; Invalidate(); } catch { }

@@ -81,6 +81,8 @@ public sealed class AppConfig
         return cfg;
     }
 
+    public void SaveAs(string path) { Path = path; Save(); }
+
     public void Save()
     {
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);

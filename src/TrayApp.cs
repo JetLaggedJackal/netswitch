@@ -146,7 +146,7 @@ public sealed class TrayApp : ApplicationContext
     void ToggleOverview() => TogglePanel("overview", () =>
     {
         var visible = NetInfo.Ordered(NetInfo.Snapshot().Values).Where(a => !_cfg.IsHidden(a.Name));
-        return PopupBuilder.Overview(visible, _cfg.Profiles);
+        return PopupBuilder.Overview(visible, _cfg.Profiles, AdapterActions);
     });
 
     void BuildMenu()
@@ -223,6 +223,38 @@ public sealed class TrayApp : ApplicationContext
         if (_invoker.InvokeRequired) _invoker.BeginInvoke(show); else show();
     }
 
+    // ---------------- quick static / DHCP on any adapter ----------------
+
+    List<PopupAction> AdapterActions(AdapterInfo a)
+    {
+        var ip = a.Addresses.Count > 0 ? a.Addresses[0].Ip : null;
+        var list = new List<PopupAction>
+        {
+            new("Set static IP…", "", () => QuickStatic(a)),
+            new("Switch to DHCP", a.Dhcp ? "already on" : "", () => _ = ApplyQuickAsync(new Profile { Name = $"DHCP on {a.Name}", Adapter = a.Name, Dhcp = true, DnsAuto = true })),
+        };
+        list.Add(PopupAction.Separator);
+        list.Add(new("Copy IP", ip ?? "", ip == null ? null : () => RunTool("copy", ip)));
+        return list;
+    }
+
+    void QuickStatic(AdapterInfo a)
+    {
+        _panel?.Dismiss();
+        using var f = new QuickIpForm(a);
+        if (f.ShowDialog() == DialogResult.OK && f.Result is { } p) _ = ApplyQuickAsync(p);
+    }
+
+    /// <summary>Applies a one-off profile without saving it: the elevated helper reads it from a side file.</summary>
+    Task ApplyQuickAsync(Profile p)
+    {
+        var quick = new AppConfig { Profiles = { p } };
+        var path = Path.Combine(Path.GetDirectoryName(_cfg.Path)!, "quick.json");
+        try { quick.SaveAs(path); }
+        catch (Exception ex) { Popup(PopupBuilder.Error("Could not switch", ex.Message)); return Task.CompletedTask; }
+        return ApplyAsync(p, path);
+    }
+
     // ---------------- network tools ----------------
 
     /// <summary>Opens a console running ping/tracert/pathping against an address, or the router page.</summary>
@@ -256,8 +288,9 @@ public sealed class TrayApp : ApplicationContext
 
     // ---------------- switching ----------------
 
-    async Task ApplyAsync(Profile p)
+    async Task ApplyAsync(Profile p, string? configPath = null)
     {
+        configPath ??= _cfg.Path;
         if (_busy) return;
         var problem = IpUtil.Validate(p);
         if (problem != null) { Popup(PopupBuilder.Error("Profile has a problem", problem)); return; }
@@ -274,10 +307,10 @@ public sealed class TrayApp : ApplicationContext
             }
             else
             {
-                var code = await Elevation.RunElevatedAsync("--apply", p.Name, "--config", _cfg.Path);
+                var code = await Elevation.RunElevatedAsync("--apply", p.Name, "--config", configPath);
                 if (code == null) return; // UAC cancelled, nothing to say
                 ok = code == 0;
-                msg = ReadResult() ?? (ok ? $"Switched to \"{p.Name}\"." : "Switching failed.");
+                msg = ReadResult(configPath) ?? (ok ? $"Switched to \"{p.Name}\"." : "Switching failed.");
             }
             if (ok)
             {
@@ -319,11 +352,11 @@ public sealed class TrayApp : ApplicationContext
 
     static string CurrentUser() => $@"{Environment.UserDomainName}\{Environment.UserName}";
 
-    string? ReadResult()
+    string? ReadResult(string? configPath = null)
     {
         try
         {
-            var f = Elevation.ResultFile(_cfg.Path);
+            var f = Elevation.ResultFile(configPath ?? _cfg.Path);
             if (!File.Exists(f)) return null;
             var text = File.ReadAllText(f).Trim();
             File.Delete(f);

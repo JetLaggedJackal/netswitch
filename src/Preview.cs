@@ -46,6 +46,10 @@ static class Preview
                 oh.Shown += (_, _) => PopupForm.Show(PopupBuilder.Overview(fake, cfg.Profiles), 600);
                 Application.Run(oh);
                 break;
+            case "quick":
+                var qa = new AdapterInfo("Wi-Fi", "MediaTek Wi-Fi 6 MT7921", true, true, new List<(string, string)> { ("192.168.1.73", "255.255.255.0") }, new List<string> { "192.168.1.1" }, new List<string> { "192.168.1.1" });
+                Application.Run(new QuickIpForm(qa));
+                break;
             case "profiles":
                 var ph = new Form { ShowInTaskbar = false, Opacity = 0, Size = new Size(1, 1) };
                 var psnap = new Dictionary<string, AdapterInfo>(StringComparer.OrdinalIgnoreCase);

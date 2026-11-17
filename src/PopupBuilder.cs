@@ -89,12 +89,13 @@ public static class PopupBuilder
     }
 
     /// <summary>Right-click overview: every visible adapter with its address.</summary>
-    public static PopupContent Overview(IEnumerable<AdapterInfo> adapters, IEnumerable<Profile> profiles)
+    public static PopupContent Overview(IEnumerable<AdapterInfo> adapters, IEnumerable<Profile> profiles,
+        Func<AdapterInfo, List<PopupAction>>? actions = null)
     {
         var entries = new List<PopupEntry>();
         foreach (var a in adapters)
         {
-            if (!a.IsUp) { entries.Add(new PopupEntry(a.Name, "Disconnected", null, false)); continue; }
+            if (!a.IsUp) { entries.Add(new PopupEntry(a.Name, "Disconnected", null, false) { Actions = actions?.Invoke(a) }); continue; }
             var ips = a.Addresses.Count == 0 ? "No IPv4 address" : string.Join(", ", a.Addresses.Select(x => x.Mask.Length > 0 ? $"{x.Ip}/{NetInfo.PrefixLength(x.Mask)}" : x.Ip));
             var rest = new List<string> { a.ModeText };
             var speed = NetInfo.FormatSpeed(a.SpeedBps);
@@ -102,7 +103,7 @@ public static class PopupBuilder
             var match = profiles.FirstOrDefault(p => string.Equals(p.Adapter, a.Name, StringComparison.OrdinalIgnoreCase) && NetInfo.Matches(p, a));
             if (match != null) rest.Add(match.Name);
             var gw = a.Gateways.FirstOrDefault(g => System.Net.IPAddress.TryParse(g, out _));
-            entries.Add(new PopupEntry(a.Name, ips, a.Addresses.FirstOrDefault().Ip, true, gw, string.Join("  ·  ", rest)));
+            entries.Add(new PopupEntry(a.Name, ips, a.Addresses.FirstOrDefault().Ip, true, gw, string.Join("  ·  ", rest)) { Actions = actions?.Invoke(a) });
         }
         return new PopupContent
         {

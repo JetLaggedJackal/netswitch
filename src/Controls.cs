@@ -51,6 +51,8 @@ public class ModernTextBox : Control
     public override Font Font { get => base.Font; set { base.Font = value; _box.Font = value; LayoutBox(); } }
     protected override void OnFontChanged(EventArgs e) { base.OnFontChanged(e); _box.Font = Font; LayoutBox(); }
     protected override void OnResize(EventArgs e) { base.OnResize(e); LayoutBox(); }
+    // DPI scaling moves the inner box after our own layout, so re-centre it on every layout pass.
+    protected override void OnLayout(LayoutEventArgs e) { base.OnLayout(e); LayoutBox(); }
     protected override void OnClick(EventArgs e) { base.OnClick(e); _box.Focus(); }
     protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); _box.Focus(); }
     protected override void OnEnabledChanged(EventArgs e)
@@ -62,7 +64,8 @@ public class ModernTextBox : Control
     }
     void LayoutBox()
     {
-        int pad = 10;
+        if (_box == null) return;
+        int pad = LogicalToDeviceUnits(10);
         _box.Width = Math.Max(10, Width - pad * 2);
         _box.Location = new Point(pad, Math.Max(2, (Height - _box.Height) / 2));
     }
