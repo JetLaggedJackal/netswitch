@@ -2,9 +2,9 @@
 
 A small Windows tray app that switches a network adapter between saved profiles with one click (for example a fixed IP and DHCP) and pops up a notification when the IP address of a watched adapter changes.
 
-![Profiles](docs/screenshots/1-profiles.png)
+![Profiles](docs/screenshots/profiles.png)
 
-![IP change pop-up](docs/screenshots/3-ip-change-popup.png)
+![Right-click overview](docs/screenshots/right-click-overview.png) ![Left-click menu](docs/screenshots/left-click-menu.png)
 
 ## Which exe to use
 
@@ -17,18 +17,13 @@ Put the exe anywhere you like (for example `C:\Tools\NetSwitch\`) and run it.
 
 ## Using it
 
-- **Click the tray icon** (left or right) to open the menu.
-  - The top lines show each adapter's current IP and whether it is DHCP or static.
-  - Click a **profile** to apply it. The profile that matches the adapter's current state has a check mark.
-- **Edit profiles…** opens a window where you add, remove and reorder profiles:
-  - Name, adapter, DHCP or static IP / mask / gateway / two DNS servers.
-  - The mask accepts `255.255.255.0` or `24`; the IP also accepts `192.168.1.50/24`.
-  - **Copy current settings** fills the fields from the adapter as it is right now.
-  - The bottom list picks which adapters trigger a pop-up when their IP changes.
-- **Notify on IP change** turns those pop-ups on or off.
-- **Start with Windows (no UAC prompts)** registers a logon task that starts NetSwitch with admin rights. With it on, switching never shows a UAC prompt. With it off, Windows asks for permission each time you switch, because changing IP settings needs admin rights.
-
-On first run NetSwitch creates an "Automatic (DHCP)" profile for your main adapter and opens the editor.
+- **Left-click the tray icon:** your profiles. Click one to switch; the active one has a dot.
+- **Right-click the tray icon:** every adapter with its IP, DHCP/static, gateway and matching profile. Click an adapter to copy its IP. Settings and Exit are here too.
+- **Settings…** opens the window where you:
+  - add, duplicate and delete profiles: name, adapter, IP Automatic/Manual, DNS Automatic/Manual (DHCP with your own DNS works);
+  - turn on **Start with Windows** (starts at sign-in with admin rights, so switching never shows a UAC prompt);
+  - choose pop-up behaviour, and per adapter whether it shows in the right-click list and whether it pops up when its IP changes.
+- When a watched adapter's IP changes, a pop-up shows the old and new IP, mask, gateway, DNS, DHCP server and lease, Wi-Fi name, matching profile, link speed and MAC.
 
 ## Where settings live
 
