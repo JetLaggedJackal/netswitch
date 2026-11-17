@@ -11,6 +11,8 @@ public sealed class ProfilesForm : Form
     public Func<bool, Task<bool>>? StartupToggle;
     /// <summary>Quits the whole app (used after an update has been swapped in).</summary>
     public Action? ExitApp;
+    /// <summary>Uninstall (argument: also delete settings).</summary>
+    public Func<bool, Task>? Uninstall;
 
     readonly Theme _t = Theme.Current;
     readonly AppConfig _cfg;
@@ -36,6 +38,8 @@ public sealed class ProfilesForm : Form
     readonly Label _updateStatus;
     Updater.Release? _available;
     bool _startupBusy;
+    ToggleSwitch _hotkeys = null!, _trayStatus = null!, _autoConnect = null!;
+    ModernTextBox _autoSsid = null!;
     ToggleSwitch _safe = null!;
     readonly List<AdapterRow> _watchRows = new();
     // footer
@@ -156,7 +160,23 @@ public sealed class ProfilesForm : Form
         _dnsGrid = Grid(2, Ui.Field(_t, "Preferred DNS", _dns1), Ui.Field(_t, "Alternate DNS", _dns2));
         var dnsCard = CardWith("DNS servers", _dnsMode, _dnsHint, _dnsGrid);
 
-        BuildPage(_profilePage, header, general, ipCard, dnsCard);
+        _autoSsid = new ModernTextBox(_t) { PlaceholderText = "Wi-Fi network name (SSID), optional" };
+        var useCurrent = new ModernButton(_t, "Use current Wi-Fi") { Ghost = true, Anchor = AnchorStyles.Left | AnchorStyles.Bottom, Width = 190, Margin = new Padding(0, 0, 0, 10) };
+        useCurrent.Click += (_, _) =>
+        {
+            var ssid = _current == null ? null : NetInfo.WifiSsid(_current.Adapter);
+            if (ssid != null) _autoSsid.Text = ssid;
+            else { _footerMsg.ForeColor = _t.SubText; _footerMsg.Text = "That adapter isn't connected to a Wi-Fi network right now."; }
+        };
+        _autoSsid.TextChanged += (_, _) => Edit(p => p.AutoSsid = _autoSsid.Text.Trim());
+        _autoConnect = new ToggleSwitch(_t, "Apply when this adapter connects (cable plugged in, Wi-Fi joined)") { Width = 520, Margin = new Padding(0, 0, 0, 2) };
+        _autoConnect.CheckedChanged += (_, _) => Edit(p => p.AutoOnConnect = _autoConnect.Checked);
+        var autoHint = Ui.Label(_t, "NetSwitch applies this profile by itself when the rule matches. Turn on Start with Windows so this happens without a permission prompt.", 8.5f, sub: true);
+        autoHint.MaximumSize = new Size(560, 0);
+        autoHint.Margin = new Padding(1, 0, 0, 4);
+        var autoCard = CardWith("Apply automatically", Grid(2, Ui.Field(_t, "When joining this Wi-Fi", _autoSsid), useCurrent), _autoConnect, autoHint);
+
+        BuildPage(_profilePage, header, general, ipCard, dnsCard, autoCard);
 
         _name.TextChanged += (_, _) => Edit(p => p.Name = _name.Text.Trim(), refresh: true);
         _adapter.SelectedIndexChanged += (_, _) => Edit(p => p.Adapter = _adapter.SelectedItem?.ToString() ?? "", refresh: true);
@@ -195,7 +215,13 @@ public sealed class ProfilesForm : Form
         _startup.CheckedChanged += async (_, _) => await OnStartupToggled();
         var quit = new ModernButton(_t, "Quit NetSwitch") { Width = 150, Margin = new Padding(0, 8, 0, 0) };
         quit.Click += (_, _) => { Close(); ExitApp?.Invoke(); };
-        var startupCard = CardWith("Startup", _startup, startupHint, quit);
+        var uninstall = new ModernButton(_t, "Uninstall…") { Width = 150, Margin = new Padding(10, 8, 0, 0) };
+        uninstall.Click += async (_, _) => await OnUninstallClicked();
+        var appButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = _t.Panel, Margin = new Padding(0) };
+        quit.Margin = new Padding(0, 8, 0, 0);
+        appButtons.Controls.Add(quit);
+        appButtons.Controls.Add(uninstall);
+        var startupCard = CardWith("Startup", _startup, startupHint, appButtons);
 
         _notifyOn = new ToggleSwitch(_t, "Pop up when an IP address changes") { Width = 420, Checked = cfg.NotifyOnIpChange, Margin = new Padding(0, 0, 0, 2) };
         _sticky = new ToggleSwitch(_t, "Keep pop-ups open until I close them") { Width = 420, Checked = cfg.PopupStaysOpen, Margin = new Padding(0, 0, 0, 2) };
@@ -207,7 +233,20 @@ public sealed class ProfilesForm : Form
         var safeHint = Ui.Label(_t, $"After each switch, NetSwitch asks you to keep the new settings and goes back to the previous ones by itself after {cfg.SafeSwitchSeconds} seconds, e.g. when the change cut you off. Undo and \"Return to previous settings\" are always available.", 8.5f, sub: true);
         safeHint.MaximumSize = new Size(560, 0);
         safeHint.Margin = new Padding(52, 0, 0, 4);
-        var switching = CardWith("Switching", _safe, safeHint);
+        _hotkeys = new ToggleSwitch(_t, "Hotkeys: Ctrl+Alt+1–9 switch to profile 1–9, Ctrl+Alt+0 goes back") { Width = 520, Checked = cfg.Hotkeys, Margin = new Padding(0, 6, 0, 2) };
+        _trayStatus = new ToggleSwitch(_t, "Show internet status on the tray icon (green, amber, red dot)") { Width = 520, Checked = cfg.TrayStatus, Margin = new Padding(0, 0, 0, 2) };
+        var switching = CardWith("Switching", _safe, safeHint, _hotkeys, _trayStatus);
+
+        var export = new ModernButton(_t, "Export profiles…") { Width = 170, Margin = new Padding(0, 0, 10, 0) };
+        var import = new ModernButton(_t, "Import profiles…") { Width = 170, Margin = new Padding(0) };
+        export.Click += (_, _) => ExportProfiles();
+        import.Click += (_, _) => ImportProfiles();
+        var backupRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, BackColor = _t.Panel, Margin = new Padding(0, 0, 0, 4) };
+        backupRow.Controls.Add(export);
+        backupRow.Controls.Add(import);
+        var backupHint = Ui.Label(_t, "Move profiles between PCs. Importing replaces profiles with the same name; nothing changes until you click Save.", 8.5f, sub: true);
+        backupHint.MaximumSize = new Size(560, 0);
+        var backup = CardWith("Profiles backup", backupRow, backupHint);
 
         var rows = new List<Control> { new AdapterHeader(_t) { Dock = DockStyle.Top } };
         var known = NetInfo.Ordered(_snap.Values).Select(a => a.Name)
@@ -236,7 +275,7 @@ public sealed class ProfilesForm : Form
         _autoUpdate = new ToggleSwitch(_t, "Check for updates once a day") { Width = 420, Checked = cfg.AutoCheckUpdates, Margin = new Padding(0, 0, 0, 2) };
         var updatesCard = CardWith("Updates", version, updateRow, _autoUpdate);
 
-        BuildPage(_notifyPage, nTitle, nSub, startupCard, switching, behaviour, watch, updatesCard);
+        BuildPage(_notifyPage, nTitle, nSub, startupCard, switching, behaviour, watch, backup, updatesCard);
 
         // ---------- empty state ----------
         var emptyTitle = Ui.Label(_t, "No profiles yet", 14f, FontStyle.Bold);
@@ -407,6 +446,8 @@ public sealed class ProfilesForm : Form
         _gw.Text = p.Gateway;
         _dns1.Text = p.Dns.ElementAtOrDefault(0) ?? "";
         _dns2.Text = p.Dns.ElementAtOrDefault(1) ?? "";
+        _autoSsid.Text = p.AutoSsid ?? "";
+        _autoConnect.Checked = p.AutoOnConnect;
         _loading = false;
 
         UpdateHeader();
@@ -561,6 +602,92 @@ public sealed class ProfilesForm : Form
 
     public void ShowSettings() => ShowPage(_notifyPage);
 
+    sealed class ProfileFile
+    {
+        public int NetSwitchProfiles { get; set; } = 1;
+        public List<Profile> Profiles { get; set; } = new();
+    }
+
+    void ExportProfiles()
+    {
+        using var dlg = new SaveFileDialog
+        {
+            Title = "Export profiles", Filter = "NetSwitch profiles (*.json)|*.json", FileName = $"NetSwitch profiles {Environment.MachineName}.json",
+            InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+        };
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        try
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(new ProfileFile { Profiles = _profiles.Select(p => p.Clone()).ToList() },
+                new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(dlg.FileName, json);
+            Notice($"Exported {_profiles.Count} profile{(_profiles.Count == 1 ? "" : "s")} to {Path.GetFileName(dlg.FileName)}.");
+        }
+        catch (Exception ex) { Fail("Could not export: " + ex.Message, null); }
+    }
+
+    void ImportProfiles()
+    {
+        using var dlg = new OpenFileDialog { Title = "Import profiles", Filter = "NetSwitch profiles or config (*.json)|*.json" };
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        List<Profile> incoming;
+        try
+        {
+            var text = File.ReadAllText(dlg.FileName);
+            // Accepts an export file or a whole config.json; both have a "Profiles" list.
+            incoming = System.Text.Json.JsonSerializer.Deserialize<ProfileFile>(text)?.Profiles ?? new();
+        }
+        catch (Exception ex) { Fail("That file couldn't be read: " + ex.Message, null); return; }
+        incoming = incoming.Where(p => p != null && !string.IsNullOrWhiteSpace(p.Name)).ToList();
+        if (incoming.Count == 0) { Fail("No profiles found in that file.", null); return; }
+
+        int replaced = 0, missing = 0;
+        foreach (var raw in incoming)
+        {
+            var p = raw.Clone();
+            p.Dns ??= new(); p.AutoSsid ??= "";
+            if (!_snap.ContainsKey(p.Adapter)) missing++;
+            var existing = _profiles.FindIndex(x => x.Name.Equals(p.Name, StringComparison.OrdinalIgnoreCase));
+            if (existing >= 0)
+            {
+                _profiles[existing] = p;
+                _list.Items[existing] = p;
+                replaced++;
+            }
+            else { _profiles.Add(p); _list.Items.Add(p); }
+        }
+        if (_current != null && !_profiles.Contains(_current)) _current = null;
+        if (_list.SelectedItem == null && _list.Items.Count > 0) _list.SelectedIndex = 0;
+        var msg = $"Imported {incoming.Count} profile{(incoming.Count == 1 ? "" : "s")}" + (replaced > 0 ? $" ({replaced} replaced)" : "") + ". Click Save to keep them.";
+        if (missing > 0) msg += $" {missing} use{(missing == 1 ? "s" : "")} an adapter this PC doesn't have: open {(missing == 1 ? "it" : "them")} and pick one.";
+        Notice(msg);
+    }
+
+    void Notice(string message)
+    {
+        _footerMsg.ForeColor = _t.SubText;
+        _footerMsg.Text = message;
+    }
+
+    async Task OnUninstallClicked()
+    {
+        if (Uninstall == null) return;
+        var deleteSettings = new TaskDialogVerificationCheckBox("Also delete my profiles and settings");
+        var page = new TaskDialogPage
+        {
+            Caption = "NetSwitch",
+            Heading = "Uninstall NetSwitch?",
+            Text = "This removes NetSwitch, its Start menu shortcut and the Start with Windows task (Windows may ask for permission for that). Your network settings stay as they are now.",
+            Icon = TaskDialogIcon.Warning,
+            Verification = deleteSettings,
+            Buttons = { new TaskDialogButton("Uninstall") { Tag = "yes" }, TaskDialogButton.Cancel },
+        };
+        page.DefaultButton = TaskDialogButton.Cancel;
+        if (TaskDialog.ShowDialog(this, page).Tag as string != "yes") return;
+        Close();
+        await Uninstall(deleteSettings.Checked);
+    }
+
     async Task OnStartupToggled()
     {
         if (_startupBusy || StartupToggle == null) return;
@@ -603,6 +730,8 @@ public sealed class ProfilesForm : Form
         _cfg.PopupStaysOpen = _sticky.Checked;
         _cfg.AutoCheckUpdates = _autoUpdate.Checked;
         _cfg.SafeSwitch = _safe.Checked;
+        _cfg.Hotkeys = _hotkeys.Checked;
+        _cfg.TrayStatus = _trayStatus.Checked;
         // Keep what the tray app recorded while this window was open.
         try { var disk = AppConfig.Load(_cfg.Path); _cfg.Previous = disk.Previous; _cfg.LastUpdateCheck = disk.LastUpdateCheck; _cfg.SkippedVersion = disk.SkippedVersion; } catch { }
         try { _cfg.Save(); }

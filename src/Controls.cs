@@ -116,6 +116,15 @@ public class ModernButton : Button
     protected override void OnMouseLeave(EventArgs e) { _hover = false; _down = false; Invalidate(); base.OnMouseLeave(e); }
     protected override void OnMouseDown(MouseEventArgs e) { _down = true; Invalidate(); base.OnMouseDown(e); }
     protected override void OnMouseUp(MouseEventArgs e) { _down = false; Invalidate(); base.OnMouseUp(e); }
+    // Never narrower than its text, whatever the DPI.
+    protected override void SetBoundsCore(int x, int y, int width, int height, BoundsSpecified specified)
+    {
+        if (!string.IsNullOrEmpty(Text) && IsHandleCreated | Parent != null)
+            width = Math.Max(width, TextRenderer.MeasureText(Text, Font).Width + LogicalToDeviceUnits(28));
+        base.SetBoundsCore(x, y, width, height, specified);
+    }
+    protected override void OnTextChanged(EventArgs e) { base.OnTextChanged(e); Width = Width; Invalidate(); }
+    protected override void OnDpiChangedAfterParent(EventArgs e) { base.OnDpiChangedAfterParent(e); Width = Width; }
     public override Size GetPreferredSize(Size proposed)
     {
         var s = TextRenderer.MeasureText(Text, Font);

@@ -50,7 +50,26 @@ public sealed class TrayApp : ApplicationContext
         PopupForm.ToolRequested = RunTool;
 
         _last = NetInfo.Snapshot();
+        _baseIcon = _icon.Icon;
         UpdateTooltip();
+
+        // Hotkeys: Ctrl+Alt+1..9 = profile 1..9, Ctrl+Alt+0 = back to the previous settings.
+        _hotkeys = new Hotkeys();
+        _hotkeys.Pressed += OnHotkey;
+        if (previewConfig == null) _hotkeys.Enable(_cfg.Hotkeys);
+
+        // Internet status on the tray icon, refreshed every 30 s and after network changes.
+        _statusTimer = new System.Windows.Forms.Timer { Interval = 30_000 };
+        _statusTimer.Tick += async (_, _) => await RefreshTrayStatusAsync();
+        if (previewConfig == null) { _statusTimer.Start(); _ = RefreshTrayStatusAsync(); }
+
+        // Auto-switch rules: check once shortly after start (e.g. signed in at the office), then on every network change.
+        if (previewConfig == null)
+        {
+            var first = new System.Windows.Forms.Timer { Interval = 8000 };
+            first.Tick += async (_, _) => { first.Stop(); first.Dispose(); await RunAutoRulesAsync(null, NetInfo.Snapshot()); };
+            first.Start();
+        }
 
         _debounce = new System.Windows.Forms.Timer { Interval = 2000 };
         _debounce.Tick += (_, _) => { _debounce.Stop(); OnNetworkSettled(); };
@@ -143,7 +162,7 @@ public sealed class TrayApp : ApplicationContext
     void ShowProfileMenu() => TogglePanel("profiles", () =>
         PopupBuilder.Profiles(_cfg.Profiles, NetInfo.Snapshot(), _busy, p => _ = ApplyAsync(p),
             _cfg.Previous.Where(kv => kv.Value.Settings != null).OrderByDescending(kv => kv.Value.At).Select(kv => (kv.Key, kv.Value)).FirstOrDefault(),
-            adapter => _ = RestorePreviousAsync(adapter)));
+            adapter => _ = RestorePreviousAsync(adapter), _cfg.Hotkeys));
 
     void ToggleOverview() => TogglePanel("overview", () =>
     {
@@ -213,7 +232,8 @@ public sealed class TrayApp : ApplicationContext
         _editor = new ProfilesForm(AppConfig.Load(), _icon.Icon ?? SystemIcons.Application, Startup.IsEnabled());
         _editor.StartupToggle = ToggleStartupAsync;
         _editor.ExitApp = ExitThread;
-        _editor.Saved += cfg => { _cfg = cfg; UpdateTooltip(); };
+        _editor.Saved += cfg => { _cfg = cfg; _hotkeys.Enable(cfg.Hotkeys); _ = RefreshTrayStatusAsync(); UpdateTooltip(); };
+        _editor.Uninstall = UninstallAsync;
         _editor.TestPopup = c => Popup(c);
         _editor.Show();
         _editor.Activate();
@@ -446,6 +466,9 @@ public sealed class TrayApp : ApplicationContext
     void OnNetworkSettled()
     {
         var now = NetInfo.Snapshot();
+        var previousSnap = _last;
+        _ = RunAutoRulesAsync(previousSnap, now);
+        _ = RefreshTrayStatusAsync();
         foreach (var name in _cfg.WatchAdapters)
         {
             _last.TryGetValue(name, out var before);
@@ -464,15 +487,141 @@ public sealed class TrayApp : ApplicationContext
         var snap = _last;
         var names = _cfg.WatchAdapters.Concat(_cfg.Profiles.Select(p => p.Adapter))
             .Where(n => !string.IsNullOrEmpty(n)).Distinct(StringComparer.OrdinalIgnoreCase);
-        var lines = new List<string> { "NetSwitch" };
+        var lines = new List<string> { _netStatus == null ? "NetSwitch" : $"NetSwitch · Internet: {_netStatus.Summary}" };
         foreach (var n in names)
             lines.Add(snap.TryGetValue(n, out var a) ? $"{a.Name}: {a.AddressText}" : $"{n}: not found");
         var text = string.Join("\n", lines);
         _icon.Text = text.Length > 127 ? text[..124] + "…" : text;
     }
 
+    // ---------------- uninstall ----------------
+
+    async Task UninstallAsync(bool deleteSettings)
+    {
+        if (Startup.IsEnabled() && !await ToggleStartupAsync(false)) return; // UAC cancelled: stop here
+        try { Installer.ScheduleUninstall(deleteSettings); }
+        catch (Exception ex) { Popup(PopupBuilder.Error("Could not uninstall", ex.Message)); return; }
+        ExitThread();
+    }
+
+    // ---------------- hotkeys ----------------
+
+    readonly Hotkeys _hotkeys;
+
+    void OnHotkey(int digit)
+    {
+        _cfg = _fixedConfig ?? AppConfig.Load();
+        if (digit == 0)
+        {
+            var last = _cfg.Previous.Where(kv => kv.Value.Settings != null).OrderByDescending(kv => kv.Value.At).FirstOrDefault();
+            if (last.Key == null) { Popup(PopupBuilder.Info("Nothing to go back to", "Ctrl+Alt+0 returns to the settings from before your last switch.")); return; }
+            _ = RestorePreviousAsync(last.Key);
+            return;
+        }
+        if (digit > _cfg.Profiles.Count) { Popup(PopupBuilder.Info($"No profile {digit}", $"Ctrl+Alt+{digit} switches to profile number {digit} in your list. You have {_cfg.Profiles.Count}.")); return; }
+        _ = ApplyAsync(_cfg.Profiles[digit - 1]);
+    }
+
+    // ---------------- internet status on the tray icon ----------------
+
+    readonly Icon? _baseIcon;
+    Icon? _statusIcon;
+    readonly System.Windows.Forms.Timer _statusTimer;
+    NetCheckResult? _netStatus;
+    bool _statusBusy;
+
+    async Task RefreshTrayStatusAsync()
+    {
+        if (_statusBusy) return;
+        if (!_cfg.TrayStatus) { SetTrayIcon(null); _netStatus = null; UpdateTooltip(); return; }
+        _statusBusy = true;
+        try
+        {
+            _netStatus = await Task.Run(NetCheck.RunAsync);
+            SetTrayIcon(_netStatus.Health);
+            UpdateTooltip();
+        }
+        catch { }
+        finally { _statusBusy = false; }
+    }
+
+    void SetTrayIcon(NetHealth? health)
+    {
+        if (_baseIcon == null) return;
+        if (health == null) { _icon.Icon = _baseIcon; return; }
+        var color = health switch
+        {
+            NetHealth.Online => Color.FromArgb(0x2E, 0xA0, 0x43),
+            NetHealth.Limited => Color.FromArgb(0xE0, 0x9B, 0x1A),
+            _ => Color.FromArgb(0xD1, 0x34, 0x38),
+        };
+        var size = SystemInformation.SmallIconSize;
+        using var bmp = new Bitmap(size.Width, size.Height);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.DrawIcon(_baseIcon, new Rectangle(Point.Empty, size));
+            float d = size.Width * 0.5f, ring = Math.Max(1f, size.Width / 16f);
+            var r = new RectangleF(size.Width - d, size.Height - d, d, d);
+            using (var bg = new SolidBrush(Theme.Current.Dark ? Color.FromArgb(32, 32, 32) : Color.White))
+                g.FillEllipse(bg, RectangleF.Inflate(r, ring, ring));
+            using var b = new SolidBrush(color);
+            g.FillEllipse(b, r);
+        }
+        var h = bmp.GetHicon();
+        var icon = (Icon)Icon.FromHandle(h).Clone();
+        DestroyIcon(h);
+        _icon.Icon = icon;
+        _statusIcon?.Dispose();
+        _statusIcon = icon;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr h);
+
+    // ---------------- auto-switch rules ----------------
+
+    readonly Dictionary<string, string?> _lastSsid = new(StringComparer.OrdinalIgnoreCase);
+    bool _autoBusy;
+
+    /// <summary>Applies a profile whose rule matches: its Wi-Fi network was just joined, or its adapter just connected.</summary>
+    async Task RunAutoRulesAsync(Dictionary<string, AdapterInfo>? before, Dictionary<string, AdapterInfo> now)
+    {
+        if (_autoBusy || _busy || _fixedConfig != null) return;
+        var cfg = AppConfig.Load();
+        var rules = cfg.Profiles.Where(p => p.AutoOnConnect || !string.IsNullOrWhiteSpace(p.AutoSsid)).ToList();
+        if (rules.Count == 0) return;
+        _autoBusy = true;
+        try
+        {
+            foreach (var group in rules.GroupBy(p => p.Adapter, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!now.TryGetValue(group.Key, out var a) || !a.IsUp) { _lastSsid[group.Key] = null; continue; }
+                Profile? pick = null;
+                if (group.Any(p => !string.IsNullOrWhiteSpace(p.AutoSsid)))
+                {
+                    var ssid = await Task.Run(() => NetInfo.WifiSsid(a.Name));
+                    _lastSsid.TryGetValue(a.Name, out var was);
+                    _lastSsid[a.Name] = ssid;
+                    if (ssid != null && !string.Equals(ssid, was, StringComparison.Ordinal))
+                        pick = group.FirstOrDefault(p => string.Equals(p.AutoSsid.Trim(), ssid, StringComparison.Ordinal));
+                }
+                bool justConnected = before == null || !before.TryGetValue(a.Name, out var b) || !b.IsUp;
+                if (pick == null && justConnected) pick = group.FirstOrDefault(p => p.AutoOnConnect);
+                if (pick == null || NetInfo.Matches(pick, a)) continue;
+                Popup(PopupBuilder.Info("Switching automatically",
+                    !string.IsNullOrWhiteSpace(pick.AutoSsid) && pick.AutoSsid.Trim() == _lastSsid.GetValueOrDefault(a.Name)
+                        ? $"Joined \"{pick.AutoSsid.Trim()}\", so NetSwitch is applying \"{pick.Name}\"."
+                        : $"{a.Name} connected, so NetSwitch is applying \"{pick.Name}\"."));
+                await ApplyAsync(pick);
+            }
+        }
+        finally { _autoBusy = false; }
+    }
+
     protected override void ExitThreadCore()
     {
+        _hotkeys.Dispose();
+        _statusTimer.Stop();
         NetworkChange.NetworkAddressChanged -= OnAddressChanged;
         NetworkChange.NetworkAvailabilityChanged -= OnAvailabilityChanged;
         _updateTimer.Stop();

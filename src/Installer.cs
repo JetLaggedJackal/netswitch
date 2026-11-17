@@ -84,6 +84,26 @@ public static class Installer
         return true;
     }
 
+    /// <summary>
+    /// Removes the Start menu shortcut and, after this process exits, the program folder (and optionally the settings).
+    /// The startup task must already be removed by the caller (it needs admin rights).
+    /// </summary>
+    public static void ScheduleUninstall(bool deleteSettings)
+    {
+        try { if (File.Exists(ShortcutPath)) File.Delete(ShortcutPath); } catch { }
+        var targets = new List<string>();
+        if (IsInstalledCopy) targets.Add($"rmdir /s /q \"{InstallDir}\"");
+        else if (Self != null)
+        {
+            targets.Add($"del /f /q \"{Self}\"");
+            targets.Add($"del /f /q \"{Path.Combine(Path.GetDirectoryName(Self)!, "portable")}\"");
+        }
+        if (deleteSettings) targets.Add($"rmdir /s /q \"{Path.GetDirectoryName(AppConfig.DefaultPath)}\"");
+        // Wait for NetSwitch to exit (ping as a sleep), then delete.
+        var cmd = $"/c ping 127.0.0.1 -n 4 > nul & {string.Join(" & ", targets)}";
+        Process.Start(new ProcessStartInfo("cmd.exe", cmd) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetTempPath() });
+    }
+
     static void EnsureShortcut()
     {
         try

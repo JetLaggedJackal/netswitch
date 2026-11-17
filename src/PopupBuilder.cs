@@ -120,8 +120,9 @@ public static class PopupBuilder
 
     /// <summary>Left-click picker: one entry per profile, click to switch. Same look and place as the overview.</summary>
     public static PopupContent Profiles(IReadOnlyList<Profile> profiles, IReadOnlyDictionary<string, AdapterInfo> snap, bool busy, Action<Profile> apply,
-        (string Adapter, PreviousSettings Prev) previous = default, Action<string>? restore = null)
+        (string Adapter, PreviousSettings Prev) previous = default, Action<string>? restore = null, bool hotkeys = false)
     {
+        int index = 0;
         var entries = new List<PopupEntry>();
         foreach (var p in profiles)
         {
@@ -133,10 +134,11 @@ public static class PopupBuilder
             var dns = p.UsesAutoDns || dnsList.Count == 0 ? null : "DNS " + string.Join(", ", dnsList);
             var rest = string.Join("  ·  ", new[] { p.Adapter, dns }.Where(x => !string.IsNullOrEmpty(x)));
             var profile = p;
+            index = entries.Count;
             entries.Add(new PopupEntry(p.Name, what, null, active, null, rest)
             {
                 Click = busy ? null : () => apply(profile),
-                Hint = "Switch",
+                Hint = hotkeys && index < 9 ? $"Switch  ·  Ctrl+Alt+{index + 1}" : "Switch",
                 Badge = active ? "Active" : null,
             });
         }
@@ -151,7 +153,7 @@ public static class PopupBuilder
                     $"{adapter}  ·  before {previous.Prev.At:HH:mm}")
                 {
                     Click = busy ? null : () => restore(adapter),
-                    Hint = "Restore",
+                    Hint = hotkeys ? "Restore  ·  Ctrl+Alt+0" : "Restore",
                 });
             }
         }

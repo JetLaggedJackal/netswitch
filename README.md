@@ -35,6 +35,11 @@ After that, updates come from **Settings > Updates**. Profiles and settings live
   - turn on safe switching, choose pop-up behaviour, and per adapter whether it shows in the overview and whether it pops up when its IP changes;
   - check for updates (or let it check once a day): it downloads the newest release from GitHub and restarts itself.
 - When a watched adapter's IP changes, a pop-up shows the old and new IP, mask, gateway, DNS, DHCP server and lease, Wi-Fi name, matching profile, link speed and MAC.
+- **Hotkeys:** Ctrl+Alt+1 to 9 switch to profile 1 to 9 (in list order), Ctrl+Alt+0 goes back to the previous settings.
+- **Tray icon** gets a green, amber or red dot for internet status (checked every 30 s); hover for details.
+- **Apply automatically** (per profile): when the adapter joins a given Wi-Fi network, or whenever it connects. Works best with Start with Windows on, so there's no permission prompt.
+- **Export / import profiles** (Settings > Profiles backup) to move them between PCs.
+- **Uninstall…** (Settings > Startup) removes the app, shortcut and startup task, and optionally your settings.
 - If something unexpected goes wrong, NetSwitch shows a pop-up and keeps running; details go to `%APPDATA%\NetSwitch\error.log`.
 
 ## Where settings live

@@ -14,6 +14,10 @@ public sealed class Profile
     public List<string> Dns { get; set; } = new();
     /// <summary>Only for DHCP profiles: true = DNS from DHCP, false = use <see cref="Dns"/>. Null = automatic.</summary>
     public bool? DnsAuto { get; set; }
+    /// <summary>Apply automatically when the adapter joins this Wi-Fi network (SSID). Empty = off.</summary>
+    public string AutoSsid { get; set; } = "";
+    /// <summary>Apply automatically when the adapter connects (cable plugged in, Wi-Fi joined).</summary>
+    public bool AutoOnConnect { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
     public bool UsesAutoDns => Dhcp && ((DnsAuto ?? true) || Dns.All(string.IsNullOrWhiteSpace));
@@ -26,6 +30,7 @@ public sealed class Profile
     {
         Name = Name, Adapter = Adapter, Dhcp = Dhcp, Ip = Ip, Mask = Mask,
         Gateway = Gateway, Dns = new List<string>(Dns), DnsAuto = DnsAuto,
+        AutoSsid = AutoSsid, AutoOnConnect = AutoOnConnect,
     };
 
     public override string ToString() => string.IsNullOrWhiteSpace(Name) ? "(unnamed)" : Name;
@@ -58,6 +63,10 @@ public sealed class AppConfig
     /// <summary>After a switch, go back automatically unless the user clicks Keep in time.</summary>
     public bool SafeSwitch { get; set; }
     public int SafeSwitchSeconds { get; set; } = 30;
+    /// <summary>Ctrl+Alt+1..9 switch to profile 1..9, Ctrl+Alt+0 returns to the previous settings.</summary>
+    public bool Hotkeys { get; set; } = true;
+    /// <summary>Colour the tray icon by internet status.</summary>
+    public bool TrayStatus { get; set; } = true;
 
     [JsonIgnore] public string Path { get; private set; } = DefaultPath;
 
@@ -89,7 +98,7 @@ public sealed class AppConfig
         cfg.WatchAdapters ??= new();
         cfg.HiddenAdapters ??= new();
         cfg.Previous = new Dictionary<string, PreviousSettings>(cfg.Previous ?? new(), StringComparer.OrdinalIgnoreCase);
-        foreach (var p in cfg.Profiles) p.Dns ??= new();
+        foreach (var p in cfg.Profiles) { p.Dns ??= new(); p.AutoSsid ??= ""; }
         return cfg;
     }
 
